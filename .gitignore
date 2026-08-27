@@ -1,0 +1,17 @@
+# Real secrets / per-install config (see config/private.example.php for the template)
+/config/private.php
+/config/installed.lock
+
+# Composer vendor tree — not required at runtime, regenerate with `composer install`
+/vendor/
+
+# User-uploaded receipt images (personal financial data) — keep the deny rule, drop the files
+/storage/uploads/*
+!/storage/uploads/.htaccess
+
+# cPanel-generated, host-specific PHP ini overrides
+/php.ini
+/.user.ini
+
+# Runtime error log
+/api/error_log

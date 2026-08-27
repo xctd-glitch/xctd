@@ -1,0 +1,29 @@
+Options -Indexes
+DirectoryIndex index.php
+
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^(?:config|src|storage|sql|tests|vendor)(?:/|$) - [F,L,NC]
+RewriteRule ^(?:composer\.(?:json|lock)|README\.md)$ - [F,L,NC]
+RewriteRule (^|/)\. - [F,L]
+</IfModule>
+
+<FilesMatch "(?:^error_log$|\.(?:env|ini|log|sql|bak|dist|lock)$)">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+
+<IfModule mod_headers.c>
+    <Files "sw.php">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+    </Files>
+    <FilesMatch "\.(?:png|ico)$">
+        Header set X-Content-Type-Options "nosniff"
+    </FilesMatch>
+</IfModule>

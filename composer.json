@@ -1,0 +1,20 @@
+{
+  "name": "bayu/bank-receipt-webapp",
+  "description": "Secure PHP 8.3 webapp with browser-side multi-bank receipt OCR and SQL persistence.",
+  "type": "project",
+  "require": {
+    "php": "^8.3",
+    "ext-fileinfo": "*",
+    "ext-pdo": "*",
+    "ext-pdo_mysql": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "App\\": "src/"
+    }
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true
+  }
+}

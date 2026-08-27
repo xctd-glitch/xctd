@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f1f5f9">
+<title>Offline · Receipt OCR</title>
+
+<style>
+:root{
+    color-scheme:light;
+    --bg:#f1f5f9;
+    --surface:rgba(255,255,255,.78);
+    --surface-strong:rgba(255,255,255,.94);
+    --border:rgba(148,163,184,.30);
+    --text:#0f172a;
+    --muted:#64748b;
+    --soft:#94a3b8;
+    --accent:#2563eb;
+    --accent-hover:#1d4ed8;
+    --accent-soft:#eff6ff;
+    --line:rgba(148,163,184,.30);
+    --radius:.3rem;
+}
+
+*,*::before,*::after{box-sizing:border-box;}
+*{scrollbar-width:none;-ms-overflow-style:none;}
+*::-webkit-scrollbar{display:none;width:0;height:0;}
+
+html{
+    min-height:100%;
+    background:var(--bg);
+}
+
+body{
+    margin:0;
+    min-height:100dvh;
+    display:grid;
+    align-items:start;
+    justify-items:center;
+    padding:
+        max(48px,env(safe-area-inset-top))
+        max(16px,env(safe-area-inset-right))
+        max(18px,env(safe-area-inset-bottom))
+        max(16px,env(safe-area-inset-left));
+    overflow-x:hidden;
+    background:
+        radial-gradient(circle at 15% 10%,rgba(37,99,235,.08),transparent 34%),
+        radial-gradient(circle at 85% 90%,rgba(100,116,139,.10),transparent 32%),
+        var(--bg);
+    color:var(--text);
+    font-family:
+        ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        Monaco,
+        Consolas,
+        "Liberation Mono",
+        monospace;
+    -webkit-font-smoothing:antialiased;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.card{
+    position:relative;
+    width:min(390px,100%);
+    padding:15px;
+    overflow:hidden;
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    background:var(--surface);
+    box-shadow:
+        inset 0 0 5px var(--accent-soft),
+        0 0 0 0.2px var(--line),
+        0 18px 48px rgba(15,23,42,.09),
+        0 2px 8px rgba(15,23,42,.04),
+        inset 0 1px 0 rgba(255,255,255,.85);
+    -webkit-backdrop-filter:blur(22px) saturate(145%);
+    backdrop-filter:blur(22px) saturate(145%);
+}
+
+.card::before{
+    content:"";
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    background:linear-gradient(
+        135deg,
+        rgba(255,255,255,.48),
+        transparent 42%
+    );
+}
+
+.content{
+    position:relative;
+    z-index:1;
+}
+
+.top{
+    display:flex;
+    align-items:center;
+    gap:11px;
+    margin-bottom:14px;
+}
+
+.icon{
+    width:38px;
+    height:38px;
+    flex:0 0 38px;
+    display:grid;
+    place-items:center;
+    border:1px solid rgba(148,163,184,.30);
+    border-radius:var(--radius);
+    background:var(--surface-strong);
+    box-shadow:
+        0 5px 14px rgba(15,23,42,.07),
+        inset 0 1px 0 rgba(255,255,255,.95);
+    color:#475569;
+}
+
+.icon svg{
+    display:block;
+    width:20px;
+    height:20px;
+}
+
+.head{
+    min-width:0;
+    flex:1;
+}
+
+.k{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    margin:0 0 3px;
+    color:var(--accent);
+    font-size:.62rem;
+    font-weight:800;
+    line-height:1.2;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+}
+
+.dot{
+    width:6px;
+    height:6px;
+    flex:0 0 6px;
+    border-radius:50%;
+    background:#ef4444;
+    box-shadow:0 0 0 3px rgba(239,68,68,.10);
+}
+
+.t{
+    margin:0;
+    color:var(--text);
+    font-size:.94rem;
+    font-weight:800;
+    line-height:1.25;
+    letter-spacing:-.025em;
+}
+
+.p{
+    margin:0;
+    color:var(--muted);
+    font-size:.70rem;
+    line-height:1.55;
+}
+
+.divider{
+    height:1px;
+    margin:14px 0;
+    background:linear-gradient(
+        90deg,
+        transparent,
+        rgba(148,163,184,.32) 10%,
+        rgba(148,163,184,.32) 90%,
+        transparent
+    );
+}
+
+.b{
+    width:100%;
+    min-height:36px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:7px;
+    padding:8px 12px;
+    border:1px solid rgba(29,78,216,.18);
+    border-radius:var(--radius);
+    background:var(--accent);
+    box-shadow:
+        0 7px 16px rgba(37,99,235,.18),
+        inset 0 1px 0 rgba(255,255,255,.16);
+    color:#fff;
+    font:inherit;
+    font-size:.70rem;
+    font-weight:800;
+    line-height:1;
+    text-align:center;
+    text-decoration:none;
+    cursor:pointer;
+    transition:
+        background .16s ease,
+        box-shadow .16s ease,
+        transform .16s ease;
+}
+
+.b svg{
+    width:14px;
+    height:14px;
+    flex:0 0 14px;
+}
+
+.b:hover{
+    background:var(--accent-hover);
+    box-shadow:
+        0 8px 18px rgba(37,99,235,.22),
+        inset 0 1px 0 rgba(255,255,255,.16);
+}
+
+.b:active{
+    transform:translateY(1px);
+}
+
+.b:focus-visible{
+    outline:2px solid rgba(37,99,235,.30);
+    outline-offset:3px;
+}
+
+.hint{
+    display:flex;
+    align-items:flex-start;
+    gap:7px;
+    margin:10px 1px 0;
+    color:var(--soft);
+    font-size:.62rem;
+    line-height:1.45;
+}
+
+.hint svg{
+    width:12px;
+    height:12px;
+    flex:0 0 12px;
+    margin-top:1px;
+}
+
+@media(max-width:420px){
+    .card{
+        padding:13px;
+    }
+
+    .top{
+        gap:9px;
+        margin-bottom:12px;
+    }
+
+    .icon{
+        width:36px;
+        height:36px;
+        flex-basis:36px;
+    }
+
+    .t{
+        font-size:.88rem;
+    }
+
+    .p{
+        font-size:.67rem;
+    }
+}
+
+@media(prefers-reduced-motion:reduce){
+    .b{
+        transition:none;
+    }
+}
+</style>
+
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/apple-touch-icon.png">
+</head>
+
+<body>
+
+<main class="card">
+    <div class="content">
+
+        <div class="top">
+            <div class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                    <path
+                        d="M4.9 4.9 19.1 19.1M8.5 8.7A6.9 6.9 0 0 1 12 7.8c3 0 5.7 1.9 7 4.2a8.5 8.5 0 0 1-2.1 2.6M12.9 16.1a5.6 5.6 0 0 1-.9.1c-3 0-5.7-1.9-7-4.2a8 8 0 0 1 1.4-1.9"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    />
+                </svg>
+            </div>
+
+            <div class="head">
+                <div class="k">
+                    <span class="dot" aria-hidden="true"></span>
+                    Offline mode
+                </div>
+
+                <h1 class="t">Connection unavailable</h1>
+            </div>
+        </div>
+
+        <p class="p">
+            Transaction data and authentication are never cached offline.
+            Reconnect to load the current SQL-backed live output.
+        </p>
+
+        <div class="divider" aria-hidden="true"></div>
+
+        <a class="b" href="./index.php">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                    d="M20 6v5h-5M4 18v-5h5M6.1 8.3A7 7 0 0 1 18.7 9M5.3 15A7 7 0 0 0 17.9 15.7"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                />
+            </svg>
+            Retry connection
+        </a>
+
+        <p class="hint">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M12 10.5V16M12 7.8v.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+
+            <span>
+                OCR runtime requires an internet connection when processing a new receipt.
+            </span>
+        </p>
+
+    </div>
+</main>
+
+<script
+    type="module"
+    src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496"
+    integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ=="
+    data-cf-beacon='{"version":"2024.11.0","token":"5e60fa00fbd249e2865e0b4f656f4c02","r":1}'
+    crossorigin="anonymous">
+</script>
+
+<script>
+(function () {
+    function c() {
+        var b = a.contentDocument || (a.contentWindow && a.contentWindow.document);
+
+        if (b) {
+            var d = b.createElement('script');
+
+            d.innerHTML = "window.__CF$cv$params={r:'a2f1c0d7af8bfd31',t:'MTc4NzQwMDQwNQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";
+
+            b.getElementsByTagName('head')[0].appendChild(d);
+        }
+    }
+
+    if (document.body) {
+        var a = document.createElement('iframe');
+
+        a.height = 1;
+        a.width = 1;
+        a.style.position = 'absolute';
+        a.style.top = 0;
+        a.style.left = 0;
+        a.style.border = 'none';
+        a.style.visibility = 'hidden';
+
+        document.body.appendChild(a);
+
+        if ('loading' !== document.readyState) {
+            c();
+        } else if (window.addEventListener) {
+            document.addEventListener('DOMContentLoaded', c);
+        } else {
+            var e = document.onreadystatechange || function () {};
+
+            document.onreadystatechange = function (b) {
+                e(b);
+
+                if ('loading' !== document.readyState) {
+                    document.onreadystatechange = e;
+                    c();
+                }
+            };
+        }
+    }
+})();
+</script>
+
+</body>
+</html>

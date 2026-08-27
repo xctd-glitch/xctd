@@ -1,0 +1,11 @@
+# Uploads are transient: validated, hashed, then deleted in the same request.
+# Nothing here is ever meant to be fetched over HTTP.
+# Guarded for both Apache generations - an unrecognized directive would make the
+# whole directory answer 500 instead of 403.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>

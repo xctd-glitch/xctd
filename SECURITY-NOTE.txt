@@ -1,0 +1,100 @@
+Bank Receipt Extractor v1.10.0 security notes
+
+- Browser performs OCR only. PHP remains authoritative for parsing, sender/SUBID lookup, team, calculation, weekly obligation allocation, and SQL insert.
+- Unknown/disabled sender identities are rejected.
+- Admin-only sender/user writes are protected server-side and require CSRF.
+- User role remains read-only.
+- Sender SUBID is mandatory and globally unique. Sender names may repeat; ambiguous sender-name OCR matches are rejected.
+- Weekly obligations are generated only for active senders and later receipts settle the oldest unpaid obligation first.
+- Sender deletion is blocked while pending/unpaid obligations exist.
+- Uploaded images are validated and temporary files are deleted after processing.
+- PWA service worker does not cache API/authenticated transaction or weekly obligation data.
+- Production ZIP contains no standalone .js member to reduce Foxhole.JS_Zip heuristic false positives.
+- Runtime monetary presentation uses whole-rupiah half-up normalization; historical DB precision is not mass-rewritten.
+- Duplicate receipt SHA-256 uniqueness is retained and MySQL 1062 is treated idempotently only when the same image hash already exists.
+
+- CSP script-src includes a per-request nonce and keeps unsafe-inline disabled.
+- Dynamic HTML sends Cache-Control no-transform to prevent Cloudflare/other intermediaries from injecting scripts into authenticated app pages.
+
+v1.8.3 PWA manifest: browser requests index.php?asset=app-meta. The route returns only public manifest JSON before session/auth/database initialization. The source JSON lives under the HTTP-denied config directory.
+
+v1.8.4 sender identity: payment transactions store team_member_id plus an SUBID snapshot. Weekly settlement queries by team_member_id so duplicate sender names cannot share or steal obligations. Final output exposes SUBID instead of source-account last4.
+
+
+v1.8.5 pre-upload SUBID selection: receipt image bytes are not sent to the server during SUBID resolution. Only CSRF-protected OCR text is submitted to the authenticated admin-only sender-options endpoint. The selected team_member_id is treated as untrusted input and is revalidated against the sender parsed from OCR during the final image upload.
+
+v1.9.0 location: Location is validated server-side (2-120 chars), escaped in HTML, and emitted as text in dynamic UI. Final output hides sender name from presentation only; internal identity remains team_member_id + sender snapshot.
+
+v1.9.1 SUBID terminology and replay guard: user-facing Alias is renamed SUBID while legacy DB column names remain unchanged. The sender-options endpoint filters fully paid current-week SUBIDs. Final upload rechecks eligibility server-side while holding a per-team_member MySQL advisory lock; a fully settled SUBID cannot be selected/saved again until a new weekly obligation exists. Carry-forward keeps the SUBID selectable until arrears are settled.
+
+
+v1.9.2 UI density only: slim-fit CSS reduces spacing/control heights without changing authorization, OCR, SUBID eligibility, weekly carry-forward, or database semantics.
+
+v1.9.3 presentation-only: harmonized .top header styling and markup across application pages; no authorization, OCR, SUBID, weekly ledger, reporting, or database semantics changed.
+
+v1.9.4 presentation-only: admin navigation tabs use equal-width flex distribution; no authorization, OCR, SUBID, weekly ledger, reporting, or database semantics changed.
+
+v1.9.5 presentation/PWA assets only: all favicon, PWA, maskable, Apple touch, shortcut, and webapp brand icons are regenerated from the provided 512x512 PNG. No authorization, OCR, SUBID, weekly ledger, reporting, transaction, or database semantics changed. Maskable/Apple variants use an opaque white background for deterministic launcher rendering; service-worker cache version is bumped to v1.9.5.
+
+v1.9.6 presentation/PWA affordance only: the install-app button (data-pwa-install) is now rendered on Statistics/Reporting, Senders & Teams, and Users, matching Dashboard and Login; assets/pwa.php's beforeinstallprompt handling was already loaded on those pages but had no visible control to trigger it. apple-mobile-web-app-status-bar-style is now set on all application pages. No authorization, OCR, SUBID, weekly ledger, reporting, transaction, or database semantics changed. None of the three affected pages are in the service worker's precache list (they are always fetched network-first), so no offline behavior changed; service-worker cache version is bumped to v1.9.6 only to ship the updated worker script.
+
+v1.9.7 error-disclosure hardening.
+PDOException extends RuntimeException. Every response boundary that classified
+RuntimeException as a user-safe message therefore returned raw database error text
+(SQLSTATE code, table, column, constraint name) to the client. All five boundaries -
+api/sender-options.php, api/senders.php, index.php, install/index.php, users.php -
+now exclude PDOException and emit their generic message instead. Full detail is still
+written to the server error log via error_log(), which is unchanged.
+
+The .htaccess FilesMatch denied files by extension only, so the extensionless error_log
+file written by cPanel was served in plaintext at /error_log, /api/error_log, and
+/install/error_log. It is now denied by name. vendor/ is denied as well; nothing in the
+application requires vendor/autoload.php at runtime.
+
+login.php contained GBK-encoded bytes in a document declaring charset=UTF-8. The file is
+now valid UTF-8; tests/v197_test.php enforces this so the mojibake cannot return.
+
+v1.9.8 durable sign-in throttling.
+Sign-in failures were tracked in $_SESSION only. Discarding the session cookie
+reset the counter, so the 5-attempt limit could be bypassed indefinitely and
+password guessing was effectively unthrottled. Failures are now recorded in the
+login_attempts table, keyed by the packed source address: 20 failures inside a
+15-minute sliding window return HTTP 429 with Retry-After until the window clears.
+The check runs before authenticate(), so a blocked address cannot confirm a valid
+password. The session counter is retained as the cheap first check.
+
+Throttling is per-address and never per-username. Locking an account by username
+would let an attacker deny the administrator access on demand; the attempted
+username is stored for forensics only and is not part of any limit.
+
+Addresses are stored as packed binary (VARBINARY(16), inet_pton) and are pruned
+one hour after the attempt. security.trusted_proxy_header is opt-in and defaults
+to null: honouring a forwarded-for header that the client can set would let an
+attacker forge a fresh bucket per request and reinstate the bypass. Set it only
+when the edge is guaranteed to overwrite that header on every request.
+
+v1.9.9 production error posture.
+The application never configured error display and inherited it from php.ini.
+On a host shipping display_errors=On, any PHP warning is rendered into the
+response body: it discloses the absolute filesystem path and injects markup into
+pages whose strict CSP and JSON contracts assume the body is exactly what the
+application emitted. src/Autoload.php is required first by every entry point and
+now pins display_errors=0, display_startup_errors=0, log_errors=1 and
+error_reporting(E_ALL). Nothing is suppressed - diagnostics go to the server log
+only, which is where the application already writes them.
+
+Deny rules are now written for both Apache generations. storage/uploads/.htaccess
+carried only the 2.2 form (Deny from all); on Apache 2.4 without mod_access_compat
+that is an unrecognized directive and the directory answers 500 rather than 403.
+The root mod_rewrite rule already blocked /storage, so this was defence in depth,
+not an open door.
+
+security.setup_key is generated by the installer but read by no code path. It is
+inert and grants nothing; it is retained only for config compatibility.
+
+v1.10.0 presentation only.
+Navigation labels were renamed (Statistics / Reporting -> Statistics, Senders &
+Teams -> Setting) and the .brand-icon border was removed. Routes, file names,
+authentication, authorization, CSRF, CSP, throttling, OCR, SUBID resolution, the
+weekly ledger, reporting, and the database schema are untouched. No part of the
+security model depends on these labels.
