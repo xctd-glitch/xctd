@@ -126,6 +126,19 @@ try {
             }
             $upload = $uploadService->receive($file);
 
+            // exit() does not run finally, and every success path below exits: the
+            // AJAX 201, the 303 redirect, and dashboardRespondDuplicateReceipt().
+            // The finally block therefore only ever fired on throw, so a validated
+            // image survived in storage/uploads on each successful save. A shutdown
+            // handler is the one cleanup that outlives exit; the is_file() guard
+            // keeps it idempotent with the finally below.
+            $uploadPath = $upload->path;
+            register_shutdown_function(static function () use ($uploadPath): void {
+                if (is_file($uploadPath)) {
+                    @unlink($uploadPath);
+                }
+            });
+
             $existingRow = $transactionRepository->findByImageSha256($upload->sha256);
             if ($existingRow !== null) {
                 dashboardRespondDuplicateReceipt(
@@ -158,7 +171,17 @@ try {
 
             // Database membership is authoritative. For duplicate sender names the browser must select
             // one active SUBID first; the server revalidates that selected record against OCR sender data.
-            $sender = (new TeamRepository($pdo, $timezone))->findActiveSender($receipt->senderName, $selectedSenderId);
+            $teamRepository = new TeamRepository($pdo, $timezone);
+            if ($receipt->senderName !== '') {
+                $sender = $teamRepository->findActiveSender($receipt->senderName, $selectedSenderId);
+            } elseif ($receipt->sourceBankCode !== null && $receipt->sourceAccountMask !== null) {
+                // No sender name was printed on the receipt (e.g. myBCA's own "Transfer
+                // Berhasil" screen); fall back to matching the masked source account
+                // against a registered account number instead.
+                $sender = $teamRepository->findActiveSenderByAccount($receipt->sourceBankCode, $receipt->sourceAccountMask, $selectedSenderId);
+            } else {
+                throw new RuntimeException('Sender could not be identified from this receipt.');
+            }
             $teamMemberId = (int) $sender['id'];
             $lockName = 'receipt-subid-' . (string) $teamMemberId;
             $lockStatement = $pdo->prepare('SELECT GET_LOCK(:lock_name, 5)');
@@ -201,6 +224,15 @@ try {
                 if ($existingRow === null) {
                     throw $e;
                 }
+
+                // dashboardRespondDuplicateReceipt() exits and exit() skips the
+                // finally below, so the named lock must be handed back here. No
+                // mutation is left under the lock at this point: the insert already
+                // failed on the duplicate key and only the existing row is reported.
+                // RELEASE_LOCK on a name this session no longer holds is a no-op,
+                // so this stays safe next to the finally.
+                $releaseStatement = $pdo->prepare('SELECT RELEASE_LOCK(:lock_name)');
+                $releaseStatement->execute(['lock_name' => $lockName]);
 
                 dashboardRespondDuplicateReceipt(
                     $isAjaxRequest,
@@ -680,11 +712,11 @@ $lastId = isset($transactions[0]['id']) ? (int) $transactions[0]['id'] : 0;
             <div class="weekly-metric"><span>Pending this week</span><b id="weekly-pending"><?= (int) ($weekly['pending'] ?? 0) ?></b></div>
             <div class="weekly-metric"><span>Carry-forward</span><b id="weekly-outstanding"><?= (int) ($weekly['outstanding_weeks'] ?? 0) ?> weeks</b></div>
         </div>
-        <div class="weekly-table"><table aria-label="Weekly sender payment status"><thead><tr><th>Sender</th><th>SUBID</th><th>Location</th><th>Team</th><th>This week</th><th class="right">Carry</th></tr></thead><tbody id="weekly-status-body">
+        <div class="weekly-table"><table aria-label="Weekly sender payment status"><thead><tr><th>SUBID</th><th>Location</th><th>Team</th><th>This week</th><th class="right">Carry</th></tr></thead><tbody id="weekly-status-body">
         <?php $weeklyRows = is_array($weekly['rows'] ?? null) ? $weekly['rows'] : []; ?>
-        <?php if ($weeklyRows === []): ?><tr id="weekly-empty-row"><td colspan="6" class="empty">No registered sender obligations.</td></tr><?php else: ?>
+        <?php if ($weeklyRows === []): ?><tr id="weekly-empty-row"><td colspan="5" class="empty">No registered sender obligations.</td></tr><?php else: ?>
             <?php foreach ($weeklyRows as $row): $status = (string) ($row['current_status'] ?? 'pending'); $carry = (int) ($row['outstanding_weeks'] ?? 0); ?>
-                <tr data-weekly-sender-id="<?= (int) ($row['sender_id'] ?? 0) ?>"><td><?= Security::e((string) ($row['sender_name'] ?? '')) ?></td><td><?= Security::e((string) ($row['alias'] ?? '')) ?></td><td><?= Security::e((string) ($row['location'] ?? '')) ?></td><td><?= Security::e((string) ($row['team'] ?? '')) ?></td><td><span class="status-pill <?= Security::e($status) ?>"><?= Security::e(ucfirst($status)) ?></span></td><td class="right <?= $carry > 0 ? 'carry' : 'carry zero' ?>"><?= $carry > 0 ? Security::e((string) $carry . ' wk') : '—' ?></td></tr>
+                <tr data-weekly-sender-id="<?= (int) ($row['sender_id'] ?? 0) ?>"><td><?= Security::e((string) ($row['alias'] ?? '')) ?></td><td><?= Security::e((string) ($row['location'] ?? '')) ?></td><td><?= Security::e((string) ($row['team'] ?? '')) ?></td><td><span class="status-pill <?= Security::e($status) ?>"><?= Security::e(ucfirst($status)) ?></span></td><td class="right <?= $carry > 0 ? 'carry' : 'carry zero' ?>"><?= $carry > 0 ? Security::e((string) $carry . ' wk') : '—' ?></td></tr>
             <?php endforeach; ?>
         <?php endif; ?>
         </tbody></table></div>
@@ -724,7 +756,12 @@ $lastId = isset($transactions[0]['id']) ? (int) $transactions[0]['id'] : 0;
 </main>
 <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 <script src="assets/jquery.php"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" crossorigin="anonymous"></script>
+<!-- SRI hash of tesseract.js@5.1.1/dist/tesseract.min.js (66695 bytes). CSP already
+     confines scripts to this origin, but the origin itself stays trusted blindly
+     without it: a tampered bundle would run inside an admin session that can post
+     transactions. Recompute and update this hash whenever the pinned version above
+     changes, otherwise the browser refuses the script and OCR stops loading. -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" integrity="sha384-GJqSu7vueQ9qN0E9yLPb3Wtpd7OrgK8KmYzC8T1IysG1bcvxvIO4qtYR/D3A991F" crossorigin="anonymous"></script>
 <script src="assets/app.php"></script>
 <script src="assets/pwa.php" data-sw="sw.php"></script>
 </body>

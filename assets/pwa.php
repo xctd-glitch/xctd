@@ -6,6 +6,15 @@ header_remove('X-Powered-By');
 header('Content-Type: application/javascript; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
 header('Cache-Control: no-cache, max-age=0, must-revalidate');
+
+// See assets/app.php: no-cache without a validator turns every revalidation into
+// a full download. mtime+size lets it answer 304 instead.
+$assetTag = '"' . dechex((int) filemtime(__FILE__)) . '-' . dechex((int) filesize(__FILE__)) . '"';
+header('ETag: ' . $assetTag);
+if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === $assetTag) {
+    http_response_code(304);
+    exit;
+}
 ?>
 (function () {
     'use strict';

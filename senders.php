@@ -358,6 +358,34 @@ $csrfToken = Security::csrfToken();
             min-width:850px;
         }
 
+        .accounts-row{
+            display:flex;
+            flex-wrap:wrap;
+            gap:6px;
+            align-items:center;
+            margin-top:6px;
+            padding-top:6px;
+            border-top:1px dashed var(--line);
+            min-width:850px;
+        }
+        .accounts-list{display:flex;flex-wrap:wrap;gap:4px}
+        .account-chip{
+            display:inline-flex;
+            align-items:center;
+            gap:4px;
+            padding:3px 6px;
+            border:1px solid var(--line);
+            border-radius:999px;
+            background:rgba(255,255,255,.85);
+            color:var(--muted);
+            font-size:.56rem;
+            white-space:nowrap;
+        }
+        .account-remove{border:0;background:transparent;color:var(--danger);cursor:pointer;font-size:.68rem;line-height:1;padding:0}
+        .account-add-form{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+        .account-add-form .select{width:auto;min-width:96px}
+        .account-add-form .input{width:auto;min-width:140px}
+
         .toast-stack{
             position:fixed;
             left:50%;
@@ -470,7 +498,21 @@ $csrfToken = Security::csrfToken();
                 <select class="select" name="team"><option value="XCTD"<?= $sender['team'] === 'XCTD' ? ' selected' : '' ?>>XCTD</option><option value="MNX"<?= $sender['team'] === 'MNX' ? ' selected' : '' ?>>MNX</option></select>
                 <select class="select" name="is_active"><option value="1"<?= $sender['is_active'] === 1 ? ' selected' : '' ?>>active</option><option value="0"<?= $sender['is_active'] !== 1 ? ' selected' : '' ?>>disabled</option></select>
                 <button class="btn secondary" type="submit">Save</button><button class="btn danger sender-delete" type="button">Delete</button>
-            </form></td></tr>
+            </form>
+            <div class="accounts-row">
+                <div class="accounts-list" data-accounts-list>
+                <?php foreach ($sender['accounts'] as $account): ?>
+                    <span class="account-chip" data-account-id="<?= (int) $account['id'] ?>"><?= Security::e($account['bank_code']) ?> •••<?= Security::e(substr($account['account_number'], -4)) ?><button type="button" class="account-remove" data-account-id="<?= (int) $account['id'] ?>" aria-label="Remove account">×</button></span>
+                <?php endforeach; ?>
+                </div>
+                <form class="account-add-form" autocomplete="off">
+                    <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken) ?>"><input type="hidden" name="action" value="add_account"><input type="hidden" name="sender_id" value="<?= (int) $sender['id'] ?>">
+                    <select class="select account-bank" name="bank_code"></select>
+                    <input class="input account-number" name="account_number" maxlength="30" placeholder="Account number">
+                    <button class="btn secondary" type="submit">+ Account</button>
+                </form>
+            </div>
+            </td></tr>
         <?php endforeach; ?>
         </tbody></table></div>
         <div class="pager" id="senders-pager" hidden><button type="button" class="pager-btn" data-pager="senders" data-dir="-1">Prev</button><span class="pager-info" id="senders-pager-info">Page 1 / 1</span><button type="button" class="pager-btn" data-pager="senders" data-dir="1">Next</button></div>

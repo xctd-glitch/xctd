@@ -23,7 +23,6 @@ return [
         'max_pixels' => 40_000_000,
     ],
     'security' => [
-        'setup_key' => 'CHANGE_TO_RANDOM_32_PLUS_CHARACTERS',
         // Sign-in throttling counts failures per source address. Behind a
         // reverse proxy or CDN every request carries the proxy's address, so
         // all clients would share one bucket; naming the forwarded-for header

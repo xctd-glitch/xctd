@@ -6,6 +6,15 @@ header_remove('X-Powered-By');
 header('Content-Type: application/javascript; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
 header('Cache-Control: no-cache, max-age=0, must-revalidate');
+
+// See assets/app.php: no-cache without a validator turns every revalidation into
+// a full download. mtime+size lets it answer 304 instead.
+$assetTag = '"' . dechex((int) filemtime(__FILE__)) . '-' . dechex((int) filesize(__FILE__)) . '"';
+header('ETag: ' . $assetTag);
+if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === $assetTag) {
+    http_response_code(304);
+    exit;
+}
 ?>
 (function ($) {
     'use strict';
@@ -21,6 +30,36 @@ header('Cache-Control: no-cache, max-age=0, must-revalidate');
     }
     function showError(message) { $('#sender-message').removeAttr('hidden').addClass('error').text(message); toast(message, true); }
     function csrfToken() { return String($('input[name="csrf_token"]').first().val() || ''); }
+
+    var BANK_CODES = ['BCA', 'MANDIRI', 'BRI', 'SEABANK', 'BNI', 'CIMB', 'PERMATA', 'DANAMON', 'BSI', 'BTN', 'MAYBANK', 'OCBC', 'JAGO', 'PANIN'];
+
+    function fillBankOptions($select) {
+        $select.empty();
+        BANK_CODES.forEach(function (code) { $('<option>', {value: code, text: code}).appendTo($select); });
+    }
+
+    function buildAccountsRow(id, accounts) {
+        var $row = $('<div>', {'class': 'accounts-row'});
+        var $list = $('<div>', {'class': 'accounts-list'}).appendTo($row);
+        (Array.isArray(accounts) ? accounts : []).forEach(function (account) {
+            var accountId = parseInt(String(account.id || 0), 10);
+            if (!Number.isFinite(accountId) || accountId <= 0) { return; }
+            var number = String(account.account_number || '');
+            var $chip = $('<span>', {'class': 'account-chip', 'data-account-id': String(accountId)}).appendTo($list);
+            $chip.append(document.createTextNode(String(account.bank_code || '') + ' •••' + number.slice(-4)));
+            $('<button>', {type: 'button', 'class': 'account-remove', 'data-account-id': String(accountId), 'aria-label': 'Remove account', text: '×'}).appendTo($chip);
+        });
+
+        var $form = $('<form>', {'class': 'account-add-form', autocomplete: 'off'}).appendTo($row);
+        $('<input>', {type: 'hidden', name: 'csrf_token', value: csrfToken()}).appendTo($form);
+        $('<input>', {type: 'hidden', name: 'action', value: 'add_account'}).appendTo($form);
+        $('<input>', {type: 'hidden', name: 'sender_id', value: String(id)}).appendTo($form);
+        var $bank = $('<select>', {'class': 'select account-bank', name: 'bank_code'}).appendTo($form);
+        fillBankOptions($bank);
+        $('<input>', {'class': 'input account-number', name: 'account_number', maxlength: 30, placeholder: 'Account number'}).appendTo($form);
+        $('<button>', {'class': 'btn secondary', type: 'submit', text: '+ Account'}).appendTo($form);
+        return $row;
+    }
 
     function render(senders) {
         if (!Array.isArray(senders)) { return; }
@@ -45,6 +84,7 @@ header('Cache-Control: no-cache, max-age=0, must-revalidate');
             $('<option>', {value: '0', text: 'disabled', selected: Number(sender.is_active) !== 1}).appendTo($status);
             $('<button>', {'class': 'btn secondary', type: 'submit', text: 'Save'}).appendTo($form);
             $('<button>', {'class': 'btn danger sender-delete', type: 'button', text: 'Delete'}).appendTo($form);
+            $td.append(buildAccountsRow(id, sender.accounts));
             $tbody.append($tr);
         });
         $('#sender-count').text(String(senders.length) + ' records');
@@ -110,11 +150,23 @@ header('Cache-Control: no-cache, max-age=0, must-revalidate');
         request({csrf_token: csrfToken(), action: 'delete', sender_id: senderId}, 'Sender deleted.');
     });
 
+    $('#senders-body').on('submit', '.account-add-form', function (event) {
+        event.preventDefault();
+        request($(this).serialize(), 'Bank account added.');
+    });
+    $('#senders-body').on('click', '.account-remove', function () {
+        var senderId = String($(this).closest('tr').attr('data-sender-id') || '');
+        var accountId = String($(this).attr('data-account-id') || '');
+        request({csrf_token: csrfToken(), action: 'delete_account', sender_id: senderId, account_id: accountId}, 'Bank account removed.');
+    });
+
     $('#senders-pager').on('click', '[data-pager]', function () {
         var dir = parseInt(String($(this).attr('data-dir') || '0'), 10) || 0;
         sendersPage += dir;
         applySendersPage();
     });
+
+    $('.account-bank').each(function () { fillBankOptions($(this)); });
 
     applySendersPage();
 }(window.jQuery));

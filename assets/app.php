@@ -6,6 +6,17 @@ header_remove('X-Powered-By');
 header('Content-Type: application/javascript; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
 header('Cache-Control: no-cache, max-age=0, must-revalidate');
+
+// no-cache makes the browser revalidate on every load, but with no validator to
+// revalidate against, each of those round trips returned the whole body. Tagging
+// with mtime+size lets the same round trip answer 304. A redeploy changes the
+// mtime, so freshness is unchanged.
+$assetTag = '"' . dechex((int) filemtime(__FILE__)) . '-' . dechex((int) filesize(__FILE__)) . '"';
+header('ETag: ' . $assetTag);
+if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === $assetTag) {
+    http_response_code(304);
+    exit;
+}
 ?>
 (function ($) {
     'use strict';
@@ -202,7 +213,7 @@ header('Cache-Control: no-cache, max-age=0, must-revalidate');
         $body.empty();
         if (rows.length === 0) {
             $('<tr>', {id: 'weekly-empty-row'}).append(
-                $('<td>', {'class': 'empty', colspan: 6}).text('No registered sender obligations.')
+                $('<td>', {'class': 'empty', colspan: 5}).text('No registered sender obligations.')
             ).appendTo($body);
             refreshWeeklyPage();
             return;
@@ -215,7 +226,6 @@ header('Cache-Control: no-cache, max-age=0, must-revalidate');
             var carry = parseInt(String(row.outstanding_weeks || 0), 10) || 0;
             var label = status.charAt(0).toUpperCase() + status.slice(1);
             var $tr = $('<tr>').attr('data-weekly-sender-id', String(senderId));
-            $('<td>').text(String(row.sender_name || '')).appendTo($tr);
             $('<td>').text(String(row.subid || row.alias || '')).appendTo($tr);
             $('<td>').text(String(row.location || '')).appendTo($tr);
             $('<td>').text(String(row.team || '')).appendTo($tr);

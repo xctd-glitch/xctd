@@ -77,6 +77,109 @@ final class TeamRepository
         throw new RuntimeException('Selected SUBID does not match the detected sender. Transaction rejected.');
     }
 
+    /**
+     * Fallback identity path for receipts that never print the sender's own name (e.g.
+     * myBCA's "Transfer Berhasil" screen, which only shows a partially masked "Dari
+     * Rekening" number). $accountMask is a fixed-length fingerprint of digits and '?'
+     * wildcards built by BankReceiptParser; a registered account matches only when every
+     * revealed digit agrees and the total length is identical.
+     *
+     * @return array{id:int,display_name:string,alias:string,location:string,team:string,tracking_start_week:string}
+     */
+    public function findActiveSenderByAccount(string $bankCode, string $accountMask, ?int $selectedSenderId = null): array
+    {
+        $rows = $this->findActiveSenderCandidatesByAccountMask($bankCode, $accountMask);
+        if ($rows === []) {
+            throw new RuntimeException('No registered sender account matches this receipt. Transaction rejected.');
+        }
+
+        if (count($rows) === 1) {
+            $sender = $rows[0];
+            if ($selectedSenderId !== null && $selectedSenderId > 0 && $selectedSenderId !== $sender['id']) {
+                throw new RuntimeException('Selected SUBID does not match the detected account. Transaction rejected.');
+            }
+            return $sender;
+        }
+
+        if ($selectedSenderId === null || $selectedSenderId <= 0) {
+            throw new RuntimeException('Account matches multiple registered records. Select a SUBID before saving.');
+        }
+
+        foreach ($rows as $sender) {
+            if ($sender['id'] === $selectedSenderId) {
+                return $sender;
+            }
+        }
+
+        throw new RuntimeException('Selected SUBID does not match the detected account. Transaction rejected.');
+    }
+
+    /** @return array{sender_name:string,requires_selection:bool,selected_id:int|null,options:list<array{id:int,display_name:string,alias:string,location:string,team:string}>} */
+    public function resolveActiveSenderOptionsByAccount(string $bankCode, string $accountMask): array
+    {
+        $rows = $this->findActiveSenderCandidatesByAccountMask($bankCode, $accountMask);
+        if ($rows === []) {
+            throw new RuntimeException('No registered sender account matches this receipt. Transaction rejected.');
+        }
+
+        $options = [];
+        foreach ($rows as $sender) {
+            $options[] = [
+                'id' => $sender['id'],
+                'display_name' => $sender['display_name'],
+                'alias' => $sender['alias'],
+                'location' => $sender['location'],
+                'team' => $sender['team'],
+            ];
+        }
+
+        $displayMask = str_replace('?', '•', $accountMask);
+
+        return [
+            'sender_name' => sprintf('%s account %s', $bankCode, $displayMask),
+            'requires_selection' => count($rows) > 1,
+            'selected_id' => count($rows) === 1 ? $rows[0]['id'] : null,
+            'options' => $options,
+        ];
+    }
+
+    /** @return list<array{id:int,display_name:string,alias:string,location:string,team:string,tracking_start_week:string}> */
+    private function findActiveSenderCandidatesByAccountMask(string $bankCode, string $accountMask): array
+    {
+        if (preg_match('/^[A-Z0-9]{2,20}$/D', $bankCode) !== 1 || preg_match('/^[0-9?]{6,20}$/D', $accountMask) !== 1) {
+            return [];
+        }
+
+        $pattern = str_replace('?', '_', $accountMask);
+        $statement = $this->pdo->prepare(
+            'SELECT tm.id, tm.display_name, tm.alias, tm.location, tm.team, tm.tracking_start_week
+             FROM team_members tm
+             INNER JOIN team_member_accounts tma ON tma.team_member_id = tm.id
+             WHERE tm.is_active = 1
+               AND tma.bank_code = :bank_code
+               AND tma.account_number LIKE :pattern
+               AND CHAR_LENGTH(tma.account_number) = :length
+             ORDER BY tm.alias ASC, tm.id ASC'
+        );
+        $statement->bindValue(':bank_code', $bankCode);
+        $statement->bindValue(':pattern', $pattern);
+        $statement->bindValue(':length', strlen($accountMask), PDO::PARAM_INT);
+        $statement->execute();
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $result[] = $this->validatedSenderRow($row);
+            }
+        }
+
+        return $result;
+    }
+
     /** @return array{sender_name:string,requires_selection:bool,selected_id:int|null,options:list<array{id:int,display_name:string,alias:string,location:string,team:string}>} */
     public function resolveActiveSenderOptions(string $senderName): array
     {
@@ -163,7 +266,7 @@ final class TeamRepository
         return $this->findActiveSender($senderName)['team'];
     }
 
-    /** @return list<array{id:int,display_name:string,alias:string,location:string,normalized_name:string,normalized_alias:string,team:string,is_active:int,tracking_start_week:string,created_at:string,updated_at:string}> */
+    /** @return list<array{id:int,display_name:string,alias:string,location:string,normalized_name:string,normalized_alias:string,team:string,is_active:int,tracking_start_week:string,created_at:string,updated_at:string,accounts:list<array{id:int,bank_code:string,account_number:string}>}> */
     public function findAll(): array
     {
         $statement = $this->pdo->query(
@@ -176,13 +279,16 @@ final class TeamRepository
             return [];
         }
 
+        $accountsByMember = $this->allAccountsGroupedByMember();
+
         $result = [];
         foreach ($rows as $row) {
             if (!is_array($row)) {
                 continue;
             }
+            $id = (int) ($row['id'] ?? 0);
             $result[] = [
-                'id' => (int) ($row['id'] ?? 0),
+                'id' => $id,
                 'display_name' => (string) ($row['display_name'] ?? ''),
                 'alias' => (string) ($row['alias'] ?? ''),
                 'location' => (string) ($row['location'] ?? ''),
@@ -193,10 +299,107 @@ final class TeamRepository
                 'tracking_start_week' => (string) ($row['tracking_start_week'] ?? ''),
                 'created_at' => (string) ($row['created_at'] ?? ''),
                 'updated_at' => (string) ($row['updated_at'] ?? ''),
+                'accounts' => $accountsByMember[$id] ?? [],
             ];
         }
 
         return $result;
+    }
+
+    /** @return array<int,list<array{id:int,bank_code:string,account_number:string}>> */
+    private function allAccountsGroupedByMember(): array
+    {
+        $statement = $this->pdo->query(
+            'SELECT id, team_member_id, bank_code, account_number FROM team_member_accounts ORDER BY bank_code ASC, id ASC'
+        );
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        $grouped = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $memberId = (int) ($row['team_member_id'] ?? 0);
+            if ($memberId <= 0) {
+                continue;
+            }
+            $grouped[$memberId][] = [
+                'id' => (int) ($row['id'] ?? 0),
+                'bank_code' => (string) ($row['bank_code'] ?? ''),
+                'account_number' => (string) ($row['account_number'] ?? ''),
+            ];
+        }
+
+        return $grouped;
+    }
+
+    public function addAccount(int $teamMemberId, string $bankCode, string $accountNumber): int
+    {
+        if ($teamMemberId <= 0 || $this->findRecordById($teamMemberId) === null) {
+            throw new RuntimeException('Sender record was not found.');
+        }
+
+        $bankCode = self::validatedBankCode($bankCode);
+        $accountNumber = self::validatedAccountNumber($accountNumber);
+
+        $duplicate = $this->pdo->prepare(
+            'SELECT id FROM team_member_accounts WHERE bank_code = :bank_code AND account_number = :account_number LIMIT 1'
+        );
+        $duplicate->execute(['bank_code' => $bankCode, 'account_number' => $accountNumber]);
+        if (is_array($duplicate->fetch())) {
+            throw new RuntimeException('This bank account is already registered to a sender.');
+        }
+
+        $statement = $this->pdo->prepare(
+            'INSERT INTO team_member_accounts (team_member_id, bank_code, account_number) VALUES (:team_member_id, :bank_code, :account_number)'
+        );
+        $statement->bindValue(':team_member_id', $teamMemberId, PDO::PARAM_INT);
+        $statement->bindValue(':bank_code', $bankCode);
+        $statement->bindValue(':account_number', $accountNumber);
+        $statement->execute();
+
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    /** Scoped to $teamMemberId so one admin request cannot delete another sender's account by guessing an id. */
+    public function deleteAccount(int $accountId, int $teamMemberId): void
+    {
+        if ($accountId <= 0 || $teamMemberId <= 0) {
+            throw new InvalidArgumentException('Invalid bank account record.');
+        }
+
+        $statement = $this->pdo->prepare(
+            'DELETE FROM team_member_accounts WHERE id = :id AND team_member_id = :team_member_id'
+        );
+        $statement->bindValue(':id', $accountId, PDO::PARAM_INT);
+        $statement->bindValue(':team_member_id', $teamMemberId, PDO::PARAM_INT);
+        $statement->execute();
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('Bank account record was not found.');
+        }
+    }
+
+    private static function validatedBankCode(string $bankCode): string
+    {
+        $bankCode = strtoupper(trim($bankCode));
+        if (preg_match('/^[A-Z0-9]{2,20}$/D', $bankCode) !== 1) {
+            throw new InvalidArgumentException('Invalid bank code.');
+        }
+
+        return $bankCode;
+    }
+
+    private static function validatedAccountNumber(string $accountNumber): string
+    {
+        $digits = preg_replace('/\D+/u', '', $accountNumber);
+        if (!is_string($digits) || preg_match('/^\d{6,20}$/D', $digits) !== 1) {
+            throw new InvalidArgumentException('Account number must contain 6-20 digits.');
+        }
+
+        return $digits;
     }
 
     public function create(string $displayName, string $alias, string $location, string $team): int

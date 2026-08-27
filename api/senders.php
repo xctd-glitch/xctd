@@ -106,6 +106,23 @@ try {
         sendersRespondJson(200, ['ok' => true, 'message' => 'Sender deleted.', 'senders' => $repository->findAll()]);
     }
 
+    if ($action === 'add_account') {
+        $bankCode = isset($_POST['bank_code']) && is_string($_POST['bank_code']) ? $_POST['bank_code'] : '';
+        $accountNumber = isset($_POST['account_number']) && is_string($_POST['account_number']) ? $_POST['account_number'] : '';
+        $repository->addAccount($id, $bankCode, $accountNumber);
+        sendersRespondJson(201, ['ok' => true, 'message' => 'Bank account added.', 'senders' => $repository->findAll()]);
+    }
+
+    if ($action === 'delete_account') {
+        $accountIdRaw = $_POST['account_id'] ?? null;
+        $accountId = is_string($accountIdRaw) && preg_match('/^[1-9]\d{0,18}$/D', $accountIdRaw) === 1 ? (int) $accountIdRaw : 0;
+        if ($accountId <= 0) {
+            sendersRespondJson(422, ['ok' => false, 'message' => 'Invalid bank account record.']);
+        }
+        $repository->deleteAccount($accountId, $id);
+        sendersRespondJson(200, ['ok' => true, 'message' => 'Bank account removed.', 'senders' => $repository->findAll()]);
+    }
+
     sendersRespondJson(422, ['ok' => false, 'message' => 'Invalid action.']);
 } catch (Throwable $e) {
     error_log('Senders endpoint failure: ' . $e->getMessage());

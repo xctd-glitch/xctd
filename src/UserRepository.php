@@ -6,10 +6,14 @@ namespace App;
 
 use InvalidArgumentException;
 use PDO;
+use PDOException;
 use RuntimeException;
 
 final class UserRepository
 {
+    /** Shared by the repository and by the minlength attribute on every password form. */
+    public const MIN_PASSWORD_LENGTH = 12;
+
     public function __construct(private readonly PDO $pdo)
     {
     }
@@ -120,11 +124,22 @@ final class UserRepository
             'INSERT INTO users (username, password_hash, role, is_active)
              VALUES (:username, :password_hash, :role, 1)'
         );
-        $statement->execute([
-            'username' => $username,
-            'password_hash' => $hash,
-            'role' => $role,
-        ]);
+        try {
+            $statement->execute([
+                'username' => $username,
+                'password_hash' => $hash,
+                'role' => $role,
+            ]);
+        } catch (PDOException $e) {
+            // Callers classify PDOException as unsafe and replace it with a generic
+            // message, so a taken username surfaced as "Unable to update users."
+            // Only the username is unique on this table, so 1062 has one meaning.
+            if (isset($e->errorInfo[1]) && (int) $e->errorInfo[1] === 1062) {
+                throw new RuntimeException('That username is already taken.');
+            }
+
+            throw $e;
+        }
 
         return (int) $this->pdo->lastInsertId();
     }
@@ -237,11 +252,19 @@ final class UserRepository
         return $username;
     }
 
+    /**
+     * Length is the only rule on purpose: composition rules (mixed case, symbols)
+     * push people towards predictable substitutions without adding real entropy.
+     * The floor applies to create() and resetPassword() only, so accounts that
+     * predate it keep working until their password is next changed.
+     */
     private static function validatePassword(string $password): void
     {
         $length = strlen($password);
-        if ($length < 5 || $length > 128) {
-            throw new InvalidArgumentException('Password must be 5-128 characters.');
+        if ($length < self::MIN_PASSWORD_LENGTH || $length > 128) {
+            throw new InvalidArgumentException(
+                'Password must be ' . self::MIN_PASSWORD_LENGTH . '-128 characters.'
+            );
         }
     }
 

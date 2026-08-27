@@ -124,7 +124,13 @@ final class Installer
                     'max_pixels' => 40_000_000,
                 ],
                 'security' => [
-                    'setup_key' => bin2hex(random_bytes(32)),
+                    // Sign-in throttling counts failures per source address. Behind a
+                    // reverse proxy every request carries the proxy's address and all
+                    // clients share one bucket; naming the forwarded-for header here
+                    // restores per-client accuracy (Cloudflare: 'CF-Connecting-IP').
+                    // Leave null unless the edge overwrites that header on every
+                    // request - a client-settable header reinstates the bypass.
+                    'trusted_proxy_header' => null,
                 ],
                 'realtime' => [
                     'poll_ms' => 2500,
@@ -161,17 +167,6 @@ final class Installer
             }
 
             throw new RuntimeException('Installation could not be completed.');
-        }
-    }
-
-    /** @param array{host:string,port:int,name:string,user:string,pass:string} $dbConfig */
-    public function testDatabase(array $dbConfig): void
-    {
-        $pdo = Database::connect($dbConfig);
-        $statement = $pdo->query('SELECT 1 AS ok');
-        $row = $statement->fetch();
-        if (!is_array($row) || (int) ($row['ok'] ?? 0) !== 1) {
-            throw new RuntimeException('Database connection test failed.');
         }
     }
 

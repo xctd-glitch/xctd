@@ -48,23 +48,63 @@ final class BankReceiptParser
         '/\bKepada\b/iu',
         '/^\s*To\b/iu',
         '/\bTujuan\s+Transfer\b/iu',
+        '/^\s*Ke\b/iu',
+        '/^\s*Tujuan\b/iu',
     ];
 
-    /** @var list<array{pattern:string,priority:int}> */
+    /**
+     * Higher priority wins when multiple labels match on the same receipt. "Nominal"/
+     * "Jumlah Transfer"-style labels rank above "Total"-style ones deliberately: several
+     * apps (Livin' by Mandiri BI-FAST, BRImo) print both a pre-fee amount and a
+     * fee-inclusive total as separate lines, and the pre-fee amount is the actual
+     * transaction value this app tracks — the bank's own admin fee is not part of it.
+     *
+     * @var list<array{pattern:string,priority:int}>
+     */
     private const AMOUNT_LABELS = [
+        ['pattern' => '/\bNominal\s+Transfer\b/iu', 'priority' => 105],
+        ['pattern' => '/\bJumlah\s+Transfer\b/iu', 'priority' => 105],
+        ['pattern' => '/\bNominal\b/iu', 'priority' => 102],
         ['pattern' => '/\bTotal\s+Transaksi\b/iu', 'priority' => 100],
         ['pattern' => '/\bTotal\s+Transfer\b/iu', 'priority' => 95],
         ['pattern' => '/\bTotal\s+Pembayaran\b/iu', 'priority' => 95],
-        ['pattern' => '/\bJumlah\s+Transfer\b/iu', 'priority' => 90],
         ['pattern' => '/\bJumlah\s+Transaksi\b/iu', 'priority' => 90],
         ['pattern' => '/\bNilai\s+Transaksi\b/iu', 'priority' => 90],
         ['pattern' => '/\bTransaction\s+Amount\b/iu', 'priority' => 90],
         ['pattern' => '/\bTransfer\s+Amount\b/iu', 'priority' => 90],
-        ['pattern' => '/\bNominal\s+Transfer\b/iu', 'priority' => 85],
-        ['pattern' => '/\bNominal\b/iu', 'priority' => 75],
         ['pattern' => '/\bAmount\b/iu', 'priority' => 75],
         ['pattern' => '/\bTotal\b/iu', 'priority' => 70],
         ['pattern' => '/\bJumlah\b/iu', 'priority' => 65],
+    ];
+
+    /**
+     * Used only to fingerprint which bank a masked source account belongs to when no
+     * sender name is present anywhere on the receipt (see $sourceBankCode on
+     * ReceiptData). Detected via a plain substring scan of the whole receipt text,
+     * which is reliable because these receipts are single-bank-app screens.
+     *
+     * @var array<string,string>
+     */
+    private const BANK_CODES = [
+        'Bank Central Asia' => 'BCA',
+        'BCA' => 'BCA',
+        'Bank Mandiri' => 'MANDIRI',
+        'Mandiri' => 'MANDIRI',
+        'Livin' => 'MANDIRI',
+        'Bank Rakyat Indonesia' => 'BRI',
+        'BRImo' => 'BRI',
+        'BRI' => 'BRI',
+        'SeaBank' => 'SEABANK',
+        'BNI' => 'BNI',
+        'CIMB' => 'CIMB',
+        'Permata' => 'PERMATA',
+        'Danamon' => 'DANAMON',
+        'BSI' => 'BSI',
+        'BTN' => 'BTN',
+        'Maybank' => 'MAYBANK',
+        'OCBC' => 'OCBC',
+        'Jago' => 'JAGO',
+        'Panin' => 'PANIN',
     ];
 
     public function parse(string $rawText): ReceiptData
@@ -77,25 +117,82 @@ final class BankReceiptParser
 
         [$amount, $amountIndex] = $this->extractTransactionAmount($lines);
 
-        $source = $this->extractSourceFromLabeledBlock($lines);
+        $labeledBlock = $this->extractSourceFromLabeledBlock($lines);
+        $source = ($labeledBlock !== null && $labeledBlock['sender'] !== null) ? $labeledBlock : null;
         if ($source === null) {
             $source = $this->extractSourceFromSenderLabel($lines);
         }
         if ($source === null && preg_match('/\b(?:Mandiri|Livin)\b/iu', $text) === 1) {
             $source = $this->extractLegacySourcePair($lines, $amountIndex);
         }
+
+        $bankCode = null;
+        $accountMask = null;
         if ($source === null) {
-            throw new RuntimeException('Sender name or source account was not detected.');
+            // No sender name resolvable anywhere. Fall back to a bank + masked-account
+            // fingerprint only when the labeled block at least located a source account
+            // line — e.g. myBCA's own "Transfer Berhasil" receipt, which never prints
+            // the sender's own name, only "Dari Rekening" with a partially masked number.
+            if ($labeledBlock !== null && $labeledBlock['account_line'] !== null) {
+                $bankCode = $this->detectBankCode($text);
+                $accountMask = $this->buildAccountMask($labeledBlock['account_line']);
+            }
+            if ($bankCode === null || $accountMask === null) {
+                throw new RuntimeException('Sender name or source account was not detected.');
+            }
         }
 
         return new ReceiptData(
-            $source['sender'],
-            $source['last4'],
+            $source['sender'] ?? '',
+            $source['last4'] ?? ($labeledBlock['last4'] ?? '0000'),
             $amount,
             $this->extractReferenceNo($text),
             $this->extractDate($text),
-            $this->extractTime($text)
+            $this->extractTime($text),
+            $bankCode,
+            $accountMask
         );
+    }
+
+    private function detectBankCode(string $text): ?string
+    {
+        foreach (self::BANK_CODES as $needle => $code) {
+            if (preg_match('/\b' . preg_quote($needle, '/') . '\b/iu', $text) === 1) {
+                return $code;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalizes a masked account line (e.g. "790 - 0** - **63") into a fixed-length
+     * fingerprint of literal digits and '?' wildcards for masked positions (e.g.
+     * "7900????63"), used to match against a registered full account number where every
+     * visible digit must agree and every masked position may be anything.
+     */
+    private function buildAccountMask(string $rawLine): ?string
+    {
+        $normalized = preg_replace('/[\s-]+/u', '', $rawLine);
+        if (!is_string($normalized) || $normalized === '') {
+            return null;
+        }
+
+        $chars = preg_split('//u', $normalized, -1, PREG_SPLIT_NO_EMPTY);
+        if (!is_array($chars)) {
+            return null;
+        }
+
+        $mask = '';
+        foreach ($chars as $char) {
+            if (preg_match('/\d/u', $char) === 1) {
+                $mask .= $char;
+            } elseif (preg_match('/[*xX•+]/u', $char) === 1) {
+                $mask .= '?';
+            }
+        }
+
+        return strlen($mask) >= 6 && strlen($mask) <= 20 ? $mask : null;
     }
 
     private function normalizeText(string $text): string
@@ -253,11 +350,18 @@ final class BankReceiptParser
     }
 
     /**
+     * Returns null only when no source-account label was found anywhere. When a label
+     * is found, the result is always non-null: a full match populates 'sender', a
+     * name-less match (see buildAccountMask()'s caller) still populates 'account_line'
+     * so parse() can fall back to bank + masked-account matching.
+     *
      * @param list<string> $lines
-     * @return array{sender:string,last4:string}|null
+     * @return array{sender:?string,last4:?string,account_line:?string}|null
      */
     private function extractSourceFromLabeledBlock(array $lines): ?array
     {
+        $partial = null;
+
         foreach ($lines as $index => $line) {
             if (!$this->matchesAny($line, self::SOURCE_LABEL_PATTERNS)) {
                 continue;
@@ -279,12 +383,15 @@ final class BankReceiptParser
             }
 
             $source = $this->extractSourceFromBlock($block);
-            if ($source !== null) {
+            if ($source['sender'] !== null && $source['last4'] !== null) {
                 return $source;
+            }
+            if ($partial === null && $source['account_line'] !== null) {
+                $partial = $source;
             }
         }
 
-        return null;
+        return $partial;
     }
 
     /**
@@ -325,28 +432,32 @@ final class BankReceiptParser
     }
 
     /**
+     * Never returns null: 'sender'/'last4'/'account_line' are individually null when
+     * not found, so a caller can still act on a name-less but account-bearing block.
+     *
      * @param list<string> $block
-     * @return array{sender:string,last4:string}|null
+     * @return array{sender:?string,last4:?string,account_line:?string}
      */
-    private function extractSourceFromBlock(array $block): ?array
+    private function extractSourceFromBlock(array $block): array
     {
         $sender = null;
         $last4 = null;
+        $accountLine = null;
 
         foreach ($block as $line) {
             if ($last4 === null) {
-                $last4 = $this->extractAccountLast4($line);
+                $candidateLast4 = $this->extractAccountLast4($line);
+                if ($candidateLast4 !== null) {
+                    $last4 = $candidateLast4;
+                    $accountLine = $line;
+                }
             }
             if ($sender === null) {
                 $sender = $this->cleanNameCandidate($line);
             }
         }
 
-        if ($sender !== null && $last4 !== null) {
-            return ['sender' => $sender, 'last4' => $last4];
-        }
-
-        return null;
+        return ['sender' => $sender, 'last4' => $last4, 'account_line' => $accountLine];
     }
 
     /**
@@ -401,8 +512,12 @@ final class BankReceiptParser
 
     private function extractAccountLast4(string $line): ?string
     {
-        if (preg_match('/(?:[*xX•+]{2,}|\.{2,}|-{2,})\s*(\d{4})\b/u', $line, $masked) === 1) {
-            return $masked[1];
+        // Most apps mask down to exactly 4 trailing digits, but some (observed on BRI:
+        // "7005 **** **** 535") mask in fixed-width groups that leave fewer digits visible
+        // in the final group. Accept 1-4 revealed digits and pad; this is a cosmetic
+        // display field only, never used for sender identity matching.
+        if (preg_match('/(?:[*xX•+]{2,}|\.{2,}|-{2,})\s*(\d{1,4})\b/u', $line, $masked) === 1) {
+            return str_pad($masked[1], 4, '0', STR_PAD_LEFT);
         }
 
         $normalized = preg_replace('/[\s-]+/u', '', $line);
@@ -410,11 +525,35 @@ final class BankReceiptParser
             return substr($full[1], -4);
         }
 
-        if ($this->looksLikeAccountLine($line) && preg_match('/(\d{4})\s*$/u', $line, $tail) === 1) {
-            return $tail[1];
+        if ($this->looksLikeAccountLine($line) && preg_match('/(\d{1,4})\s*$/u', $line, $tail) === 1) {
+            return str_pad($tail[1], 4, '0', STR_PAD_LEFT);
         }
 
         return null;
+    }
+
+    /**
+     * Some apps (BRI) render a two-letter avatar-initials badge directly beside the
+     * account holder's name, and OCR can merge them onto one line, e.g. "AF AHMAD
+     * AINUL FUAD". Strip the badge only when it exactly matches the initials of the
+     * first and last word that follow, so a genuine two-letter-leading name is untouched.
+     */
+    private function stripAvatarInitials(string $line): string
+    {
+        if (preg_match('/^([A-Z]{2})\s+(\S.*)$/u', $line, $match) !== 1) {
+            return $line;
+        }
+
+        $words = preg_split('/\s+/u', trim($match[2]));
+        if (!is_array($words) || count($words) < 2) {
+            return $line;
+        }
+
+        $first = function_exists('mb_substr') ? mb_substr($words[0], 0, 1, 'UTF-8') : substr($words[0], 0, 1);
+        $last = function_exists('mb_substr') ? mb_substr(end($words), 0, 1, 'UTF-8') : substr(end($words), 0, 1);
+        $derivedInitials = function_exists('mb_strtoupper') ? mb_strtoupper($first . $last, 'UTF-8') : strtoupper($first . $last);
+
+        return $derivedInitials === $match[1] ? $match[2] : $line;
     }
 
     private function cleanNameCandidate(string $line): ?string
@@ -423,6 +562,8 @@ final class BankReceiptParser
         if ($line === '' || strlen($line) > 160) {
             return null;
         }
+
+        $line = $this->stripAvatarInitials($line);
 
         if ($this->matchesAny($line, self::SOURCE_LABEL_PATTERNS)
             || $this->matchesAny($line, self::DESTINATION_LABEL_PATTERNS)) {
@@ -443,7 +584,7 @@ final class BankReceiptParser
             return null;
         }
 
-        if (preg_match('/\b(?:Transfer|Transaksi|Berhasil|Sukses|Success|Receipt|Bukti|Keterangan|Catatan|Metode|Nominal|Total|Jumlah|Biaya|Admin|Fee|Tanggal|Waktu|Reference|Referensi|No\.?\s*Ref|Nomor|Saldo|Balance|Sumber\s+Dana|Rekening|Account|Tahapan|Tabungan|Giro|Mobile|myBCA|BRImo|Wondr|Livin)\b/iu', $line) === 1) {
+        if (preg_match('/\b(?:Transfer|Transaksi|Berhasil|Sukses|Success|Receipt|Bukti|Keterangan|Catatan|Metode|Nominal|Total|Jumlah|Biaya|Admin|Fee|Tanggal|Waktu|Reference|Referensi|No\.?\s*Ref|Nomor|Saldo|Balance|Sumber\s+Dana|Rekening|Account|Tahapan|Tabungan|Giro|Mobile|myBCA|BRImo|Wondr|Livin|Mata\s+Uang|Berita|Kurs|Jenis|Alias|Informasi|Provider|Channel|IDR|Rupiah|Dollar|Currency)\b/iu', $line) === 1) {
             return null;
         }
 
@@ -505,6 +646,7 @@ final class BankReceiptParser
             '/\bNomor\s+Referensi\s*[:#-]?\s*([A-Z0-9-]{8,50})\b/iu',
             '/\bReference(?:\s+Number|\s+No\.?)?\s*[:#-]?\s*([A-Z0-9-]{8,50})\b/iu',
             '/\b(?:Transaction|Transaksi)\s+ID\s*[:#-]?\s*([A-Z0-9-]{8,50})\b/iu',
+            '/\bNo\.?\s*Transaksi\s*[:#-]?\s*([A-Z0-9-]{8,50})\b/iu',
         ];
 
         foreach ($patterns as $pattern) {

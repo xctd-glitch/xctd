@@ -75,6 +75,19 @@ CREATE TABLE weekly_payment_obligations (
     KEY idx_weekly_payment_sender_status (sender_name, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE team_member_accounts (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    team_member_id BIGINT UNSIGNED NOT NULL,
+    bank_code VARCHAR(20) NOT NULL,
+    account_number VARCHAR(30) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_team_member_accounts_bank_account (bank_code, account_number),
+    KEY idx_team_member_accounts_member (team_member_id),
+    CONSTRAINT fk_team_member_accounts_member FOREIGN KEY (team_member_id)
+        REFERENCES team_members (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE login_attempts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     ip_address VARBINARY(16) NOT NULL,

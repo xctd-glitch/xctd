@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Auth;
 use App\Installer;
 use App\Security;
+use App\UserRepository;
 
 require dirname(__DIR__) . '/src/Autoload.php';
 
@@ -16,7 +17,13 @@ $rootPath = dirname(__DIR__);
 $installer = new Installer($rootPath);
 $errorMessage = null;
 $installed = $installer->isInstalled();
-$checks = $installer->preflight();
+
+// This page is reachable without authentication, and it stays reachable after the
+// installer locks itself. Preflight reports the exact PHP patch level, which
+// extensions are loaded, and which directories are writable - a free reconnaissance
+// report for anyone who requests /install/. It is only actionable while an install
+// can still happen, so it is not gathered at all once the application is installed.
+$checks = $installed ? [] : $installer->preflight();
 
 /** @return string */
 function installPostString(string $key, int $maxLength = 255): string
@@ -129,6 +136,7 @@ foreach ($checks as $check) {
 <main class="wrap">
     <header class="head"><h1>Auto installer</h1><p>cPanel/shared-host wizard · browser OCR · PHP 8.3 · MySQL/MariaDB · creates schema + first admin + locks itself.</p></header>
 
+    <?php if (!$installed): ?>
     <section class="card">
         <h2 class="section-title">Server preflight</h2>
         <div class="checks">
@@ -140,6 +148,7 @@ foreach ($checks as $check) {
             <?php endforeach; ?>
         </div>
     </section>
+    <?php endif; ?>
 
     <?php if ($installed): ?>
         <section class="card"><div class="locked">Installer locked. Existing configuration was detected. <a href="../login.php">Open sign in</a>.</div></section>
@@ -165,8 +174,8 @@ foreach ($checks as $check) {
                 <h2 class="section-title">2 · Initial administrator</h2>
                 <label class="field">Username<input class="input" name="username" value="<?= Security::e(installPostString('username', 50)) ?>" minlength="3" maxlength="50" autocomplete="username" required></label>
                 <div class="form-grid cols">
-                    <label class="field">Password<input class="input" type="password" name="password" minlength="5" maxlength="128" autocomplete="new-password" required></label>
-                    <label class="field">Confirm password<input class="input" type="password" name="password_confirm" minlength="5" maxlength="128" autocomplete="new-password" required></label>
+                    <label class="field">Password<input class="input" type="password" name="password" minlength="<?= UserRepository::MIN_PASSWORD_LENGTH ?>" maxlength="128" autocomplete="new-password" required></label>
+                    <label class="field">Confirm password<input class="input" type="password" name="password_confirm" minlength="<?= UserRepository::MIN_PASSWORD_LENGTH ?>" maxlength="128" autocomplete="new-password" required></label>
                 </div>
                 <button class="btn" type="submit"<?= $allChecksPassed ? '' : ' disabled' ?>>Install production app</button>
                 <?php if (!$allChecksPassed): ?><p class="hint">Resolve every FAIL item before installation.</p><?php endif; ?>

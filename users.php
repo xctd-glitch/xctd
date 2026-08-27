@@ -16,7 +16,26 @@ Auth::requireLogin();
 $currentUser = Auth::user();
 
 $errorMessage = null;
-$successMessage = null;
+
+// Mutations answer with a redirect (see the POST branch below), so the outcome has
+// to survive one hop. A page-specific key keeps it from being consumed by the
+// dashboard, which reads its own 'flash_success'.
+$successMessage = isset($_SESSION['flash_users_success']) && is_string($_SESSION['flash_users_success'])
+    ? $_SESSION['flash_users_success']
+    : null;
+unset($_SESSION['flash_users_success']);
+
+/**
+ * Post/Redirect/Get for the three mutating actions on this page. Rendering the
+ * result directly from the POST left the form resubmittable by reload, which for
+ * 'create' means a second account attempt and for 'password' a second reset.
+ */
+function usersRedirectWithFlash(string $message): never
+{
+    $_SESSION['flash_users_success'] = $message;
+    header('Location: users.php', true, 303);
+    exit;
+}
 
 try {
     /** @var array<string, mixed> $config */
@@ -40,7 +59,7 @@ try {
             $password = isset($_POST['password']) && is_string($_POST['password']) ? $_POST['password'] : '';
             $role = isset($_POST['role']) && is_string($_POST['role']) ? $_POST['role'] : '';
             $repository->create($username, $password, $role);
-            $successMessage = 'User created.';
+            usersRedirectWithFlash('User created.');
         } elseif ($action === 'access') {
             $id = filter_input(INPUT_POST, 'user_id', FILTER_VALIDATE_INT);
             $role = isset($_POST['role']) && is_string($_POST['role']) ? $_POST['role'] : '';
@@ -49,7 +68,7 @@ try {
                 throw new RuntimeException('Invalid user.');
             }
             $repository->updateAccess($id, $role, $isActive, $currentUser['id']);
-            $successMessage = 'Access updated.';
+            usersRedirectWithFlash('Access updated.');
         } elseif ($action === 'password') {
             $id = filter_input(INPUT_POST, 'user_id', FILTER_VALIDATE_INT);
             $password = isset($_POST['password']) && is_string($_POST['password']) ? $_POST['password'] : '';
@@ -57,7 +76,7 @@ try {
                 throw new RuntimeException('Invalid user.');
             }
             $repository->resetPassword($id, $password);
-            $successMessage = 'Password updated.';
+            usersRedirectWithFlash('Password updated.');
         } else {
             throw new RuntimeException('Invalid action.');
         }
@@ -444,7 +463,7 @@ $csrfToken = Security::csrfToken();
             <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken) ?>">
             <input type="hidden" name="action" value="create">
             <input type="text" name="username" placeholder="username" maxlength="50" required autocomplete="off">
-            <input type="password" name="password" placeholder="password" minlength="5" maxlength="128" required autocomplete="new-password">
+            <input type="password" name="password" placeholder="password" minlength="<?= UserRepository::MIN_PASSWORD_LENGTH ?>" maxlength="128" required autocomplete="new-password">
             <select name="role" required><option value="user">user · read only</option><option value="admin">admin · full</option></select>
             <button class="btn" type="submit">Create</button>
         </form>
@@ -479,7 +498,7 @@ $csrfToken = Security::csrfToken();
                                 <input type="hidden" name="csrf_token" value="<?= Security::e($csrfToken) ?>">
                                 <input type="hidden" name="action" value="password">
                                 <input type="hidden" name="user_id" value="<?= (int) $user['id'] ?>">
-                                <input type="password" name="password" placeholder="new password" minlength="5" maxlength="128" required autocomplete="new-password">
+                                <input type="password" name="password" placeholder="new password" minlength="<?= UserRepository::MIN_PASSWORD_LENGTH ?>" maxlength="128" required autocomplete="new-password">
                                 <button class="btn secondary" type="submit">Reset</button>
                             </form>
                         </td>

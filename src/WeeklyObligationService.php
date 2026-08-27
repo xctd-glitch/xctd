@@ -49,6 +49,8 @@ final class WeeklyObligationService
         $currentWeekString = $currentWeek->format('Y-m-d');
 
         $members = $this->activeMembers();
+        $coverage = $this->obligationCoverage($currentWeekString);
+
         foreach ($members as $member) {
             $startRaw = (string) ($member['tracking_start_week'] ?? '');
             $trackingStart = DateTimeImmutable::createFromFormat('!Y-m-d', $startRaw, $zone);
@@ -60,7 +62,15 @@ final class WeeklyObligationService
                 continue;
             }
 
-            $week = $trackingStart;
+            // Every tracked week used to be re-INSERTed on each sync, so the write
+            // cost grew without bound as weeks accumulated - and sync() runs on the
+            // dashboard, on sender-options, and on the polling endpoint. Resume from
+            // the last materialised week instead, but only when the stored rows are
+            // provably contiguous from tracking_start. A gap (rows pruned when a
+            // sender is disabled, or removed by hand) fails that check and falls back
+            // to the original full sweep, so the self-healing property is preserved.
+            $week = $this->resumePoint($member, $trackingStart, $coverage, $zone);
+
             $iterations = 0;
             while ($week <= $currentWeek) {
                 $this->ensureObligation($member, $week);
@@ -79,9 +89,132 @@ final class WeeklyObligationService
         );
         $age->execute(['current_week' => $currentWeekString]);
 
+        // allocatePayments() returns immediately for a sender with no unallocated
+        // transaction, but only after spending two queries to discover that. One
+        // query up front narrows the loop to the senders that can actually change.
+        $pending = $this->membersWithUnallocatedPayments();
         foreach ($members as $member) {
+            if (!isset($pending[(int) ($member['id'] ?? 0)])) {
+                continue;
+            }
             $this->allocatePayments($member);
         }
+    }
+
+    /**
+     * Materialised obligation span per active sender, counted only inside that
+     * sender's own tracked range so the totals are comparable with the range the
+     * caller is about to walk.
+     *
+     * @return array<int, array{total:int,last_week:?string}>
+     */
+    private function obligationCoverage(string $currentWeek): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT tm.id,
+                    COUNT(w.id) AS total,
+                    MAX(w.week_start) AS last_week
+             FROM team_members tm
+             LEFT JOIN weekly_payment_obligations w
+               ON w.team_member_id = tm.id
+              AND w.week_start >= tm.tracking_start_week
+              AND w.week_start <= :current_week
+             WHERE tm.is_active = 1
+             GROUP BY tm.id'
+        );
+        $statement->execute(['current_week' => $currentWeek]);
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        $coverage = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $id = (int) ($row['id'] ?? 0);
+            if ($id <= 0) {
+                continue;
+            }
+            $lastWeek = $row['last_week'] ?? null;
+            $coverage[$id] = [
+                'total' => (int) ($row['total'] ?? 0),
+                'last_week' => is_string($lastWeek) && $lastWeek !== '' ? $lastWeek : null,
+            ];
+        }
+
+        return $coverage;
+    }
+
+    /**
+     * First week that still needs an obligation row. Falls back to $trackingStart
+     * whenever contiguity cannot be proven, which reproduces the original sweep.
+     *
+     * @param array<string,mixed> $member
+     * @param array<int, array{total:int,last_week:?string}> $coverage
+     */
+    private function resumePoint(
+        array $member,
+        DateTimeImmutable $trackingStart,
+        array $coverage,
+        DateTimeZone $zone
+    ): DateTimeImmutable {
+        $state = $coverage[(int) ($member['id'] ?? 0)] ?? null;
+        if ($state === null || $state['last_week'] === null || $state['total'] <= 0) {
+            return $trackingStart;
+        }
+
+        $lastWeek = DateTimeImmutable::createFromFormat('!Y-m-d', $state['last_week'], $zone);
+        if (!$lastWeek instanceof DateTimeImmutable) {
+            return $trackingStart;
+        }
+
+        $lastWeek = self::weekStartForDate($lastWeek);
+        if ($lastWeek < $trackingStart) {
+            return $trackingStart;
+        }
+
+        // Contiguous means the row count equals the number of weeks the span covers.
+        $spanWeeks = intdiv((int) $trackingStart->diff($lastWeek)->days, 7) + 1;
+        if ($state['total'] !== $spanWeeks) {
+            return $trackingStart;
+        }
+
+        return $lastWeek->add(new DateInterval('P7D'));
+    }
+
+    /**
+     * Sender ids owning at least one transaction not yet tied to an obligation.
+     *
+     * @return array<int, true>
+     */
+    private function membersWithUnallocatedPayments(): array
+    {
+        $statement = $this->pdo->query(
+            'SELECT DISTINCT pt.team_member_id
+             FROM payment_transactions pt
+             LEFT JOIN weekly_payment_obligations used
+               ON used.payment_transaction_id = pt.id
+             WHERE pt.team_member_id IS NOT NULL AND used.id IS NULL'
+        );
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $id = (int) ($row['team_member_id'] ?? 0);
+            if ($id > 0) {
+                $ids[$id] = true;
+            }
+        }
+
+        return $ids;
     }
 
     /** @return array<string,mixed> */

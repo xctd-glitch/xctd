@@ -75,7 +75,14 @@ try {
     }
 
     $receipt = (new BankReceiptParser())->parse($ocrText);
-    $resolution = (new TeamRepository($pdo, $timezone))->resolveActiveSenderOptions($receipt->senderName);
+    $teamRepository = new TeamRepository($pdo, $timezone);
+    if ($receipt->senderName !== '') {
+        $resolution = $teamRepository->resolveActiveSenderOptions($receipt->senderName);
+    } elseif ($receipt->sourceBankCode !== null && $receipt->sourceAccountMask !== null) {
+        $resolution = $teamRepository->resolveActiveSenderOptionsByAccount($receipt->sourceBankCode, $receipt->sourceAccountMask);
+    } else {
+        throw new RuntimeException('Sender could not be identified from this receipt.');
+    }
 
     $weeklyService = new WeeklyObligationService($pdo, $timezone);
     $weeklyService->sync();
