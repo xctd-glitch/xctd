@@ -76,6 +76,51 @@ function dashboardRespondDuplicateReceipt(
     exit;
 }
 
+/**
+ * Groups Final output rows into Monday-Sunday weeks (same boundary as
+ * WeeklyObligationService) so the dashboard can show past weeks collapsed and the
+ * current week open, newest week first. A row's own receipt_date decides its week,
+ * falling back to created_at's date when receipt_date could not be parsed from OCR.
+ *
+ * @param list<array<string,mixed>> $transactions
+ * @return list<array{week_start:string,label:string,is_current:bool,rows:list<array<string,mixed>>}>
+ */
+function dashboardGroupTransactionsByWeek(array $transactions, string $timezone): array
+{
+    $zone = new DateTimeZone($timezone);
+    $currentWeekStart = WeeklyObligationService::weekStartForDate(new DateTimeImmutable('now', $zone))->format('Y-m-d');
+
+    $groups = [];
+    foreach ($transactions as $transaction) {
+        $dateRaw = (string) (($transaction['receipt_date'] ?? null) ?: ($transaction['created_at'] ?? ''));
+        $datePart = substr($dateRaw, 0, 10);
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $datePart, $zone);
+        $weekStart = $date instanceof DateTimeImmutable
+            ? WeeklyObligationService::weekStartForDate($date)->format('Y-m-d')
+            : $currentWeekStart;
+
+        if (!isset($groups[$weekStart])) {
+            $weekStartDate = DateTimeImmutable::createFromFormat('!Y-m-d', $weekStart, $zone);
+            $label = $weekStart;
+            if ($weekStartDate instanceof DateTimeImmutable) {
+                $weekEndDate = WeeklyObligationService::weekEndForStart($weekStartDate);
+                $label = $weekStartDate->format('d M') . '–' . $weekEndDate->format('d M Y');
+            }
+            $groups[$weekStart] = [
+                'week_start' => $weekStart,
+                'label' => $label,
+                'is_current' => $weekStart === $currentWeekStart,
+                'rows' => [],
+            ];
+        }
+        $groups[$weekStart]['rows'][] = $transaction;
+    }
+
+    krsort($groups);
+
+    return array_values($groups);
+}
+
 try {
     /** @var array<string,mixed> $config */
     $config = require __DIR__ . '/config/app.php';
@@ -174,13 +219,17 @@ try {
             $teamRepository = new TeamRepository($pdo, $timezone);
             if ($receipt->senderName !== '') {
                 $sender = $teamRepository->findActiveSender($receipt->senderName, $selectedSenderId);
-            } elseif ($receipt->sourceBankCode !== null && $receipt->sourceAccountMask !== null) {
+            } elseif ($receipt->sourceBankCode !== null && $receipt->sourceAccountMask !== null
+                && $teamRepository->accountMaskHasAnyMatch($receipt->sourceBankCode, $receipt->sourceAccountMask)) {
                 // No sender name was printed on the receipt (e.g. myBCA's own "Transfer
                 // Berhasil" screen); fall back to matching the masked source account
                 // against a registered account number instead.
                 $sender = $teamRepository->findActiveSenderByAccount($receipt->sourceBankCode, $receipt->sourceAccountMask, $selectedSenderId);
             } else {
-                throw new RuntimeException('Sender could not be identified from this receipt.');
+                // Neither a name nor a matching account was found at all - the picker UI
+                // (api/sender-options.php) already offered every active sender for the
+                // admin to choose from, so $selectedSenderId is authoritative here.
+                $sender = $teamRepository->findActiveSenderManually($selectedSenderId);
             }
             $teamMemberId = (int) $sender['id'];
             $lockName = 'receipt-subid-' . (string) $teamMemberId;
@@ -300,6 +349,7 @@ try {
     }
 
     $transactions = $transactionRepository->findRecent($maxRows);
+    $transactionWeeks = dashboardGroupTransactionsByWeek($transactions, $timezone);
     $summary = SummaryPresenter::present($summaryRepository->dashboard(null, $timezone));
 } catch (Throwable $e) {
     error_log('Application failure: ' . $e->getMessage());
@@ -316,6 +366,7 @@ try {
     }
 
     $transactions = [];
+    $transactionWeeks = [];
     $summary = [
         'week' => ['label' => 'Current week', 'total' => 'IDR 0', 'count' => 0, 'teams' => ['XCTD' => 'IDR 0', 'MNX' => 'IDR 0']],
         'month' => ['label' => 'Current month', 'total' => 'IDR 0', 'count' => 0, 'teams' => ['XCTD' => 'IDR 0', 'MNX' => 'IDR 0']],
@@ -553,10 +604,20 @@ $lastId = isset($transactions[0]['id']) ? (int) $transactions[0]['id'] : 0;
         th:nth-child(2),td:nth-child(2){width:12%}
         th:nth-child(3),td:nth-child(3){width:20%}
         th:nth-child(4),td:nth-child(4){width:39%}
+        th:nth-child(5),td:nth-child(5){width:64px}
         .right{text-align:right}
         .receipt-date{display:none}
         .final{color:var(--accent);font-weight:900}
         .empty{padding:14px;color:var(--muted);text-align:center}
+
+        /* v1.10.2 weekly grouping for Final output */
+        .week-group{margin-bottom:7px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,255,255,.82);overflow:hidden}
+        .week-group:last-child{margin-bottom:0}
+        .week-summary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;cursor:pointer;font-size:.62rem;font-weight:800;color:var(--text)}
+        .week-summary .count{color:var(--muted);font-size:.55rem;font-weight:700}
+        .week-group .table-wrap{border:0;border-top:1px solid var(--line);border-radius:0}
+        .tx-delete{min-height:24px;padding:3px 8px;border:1px solid #fecaca;border-radius:var(--radius);background:rgba(255,255,255,.9);color:var(--danger);font:inherit;font-size:.55rem;font-weight:800;cursor:pointer}
+        .tx-delete:hover{background:var(--danger-soft);border-color:#fca5a5}
 
         .status-pill{display:inline-flex;align-items:center;min-height:18px;padding:2px 6px;border:1px solid transparent;border-radius:999px;background:#f1f5f9;color:#475569;font-size:.53rem;font-weight:800;line-height:1}
         .status-pill.paid{border-color:#a7f3d0;background:var(--ok-soft);color:#047857}
@@ -765,12 +826,28 @@ $lastId = isset($transactions[0]['id']) ? (int) $transactions[0]['id'] : 0;
 
     <section class="card">
         <div class="section-title"><h2>Final output</h2><div class="meta"><span id="live-status" class="live-state live-ok">Live</span><span id="row-count" class="count"><?= count($transactions) ?> rows</span></div></div>
-        <div class="table-wrap"><table aria-label="Final transaction output"><thead><tr><th>SUBID</th><th>Team</th><th class="right">Final</th><th class="receipt-date">Receipt date</th></tr></thead><tbody id="transactions-body">
-        <?php if ($transactions === []): ?><tr id="empty-row"><td colspan="4" class="empty">No transactions found.</td></tr><?php else: ?>
-            <?php foreach ($transactions as $transaction): ?><tr data-id="<?= (int) ($transaction['id'] ?? 0) ?>"><td><?= Security::e((string) (($transaction['sender_alias'] ?? null) ?: '—')) ?></td><td><?= Security::e((string) ($transaction['team'] ?? '')) ?></td><td class="right final"><?= Security::e(MoneyFormatter::formatIdr((string) ($transaction['adjusted_amount'] ?? '0'))) ?></td><td class="receipt-date"><?= Security::e((string) (($transaction['receipt_date'] ?? null) ?: ($transaction['created_at'] ?? ''))) ?></td></tr><?php endforeach; ?>
+        <div id="transactions-weeks" data-can-delete="<?= $isAdmin ? '1' : '0' ?>">
+        <?php if ($transactionWeeks === []): ?>
+            <div class="empty" id="transactions-empty">No transactions found.</div>
+        <?php else: ?>
+            <?php foreach ($transactionWeeks as $week): ?>
+            <details class="week-group" data-week-start="<?= Security::e($week['week_start']) ?>"<?= $week['is_current'] ? ' open' : '' ?>>
+                <summary class="week-summary"><span><?= Security::e($week['label']) ?></span><span class="count" data-week-count><?= count($week['rows']) ?> rows</span></summary>
+                <div class="table-wrap"><table aria-label="Final transaction output"><thead><tr><th>SUBID</th><th>Team</th><th class="right">Final</th><th class="receipt-date">Receipt date</th><?php if ($isAdmin): ?><th class="right">Delete</th><?php endif; ?></tr></thead><tbody>
+                <?php foreach ($week['rows'] as $transaction): ?>
+                    <tr data-id="<?= (int) ($transaction['id'] ?? 0) ?>">
+                        <td><?= Security::e((string) (($transaction['sender_alias'] ?? null) ?: '—')) ?></td>
+                        <td><?= Security::e((string) ($transaction['team'] ?? '')) ?></td>
+                        <td class="right final"><?= Security::e(MoneyFormatter::formatIdr((string) ($transaction['adjusted_amount'] ?? '0'))) ?></td>
+                        <td class="receipt-date"><?= Security::e((string) (($transaction['receipt_date'] ?? null) ?: ($transaction['created_at'] ?? ''))) ?></td>
+                        <?php if ($isAdmin): ?><td class="right"><button type="button" class="tx-delete" data-id="<?= (int) ($transaction['id'] ?? 0) ?>">Delete</button></td><?php endif; ?>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+            </details>
+            <?php endforeach; ?>
         <?php endif; ?>
-        </tbody></table></div>
-        <div class="pager" id="transactions-pager" hidden><button type="button" class="pager-btn" data-pager="transactions" data-dir="-1">Prev</button><span class="pager-info" id="transactions-pager-info">Page 1 / 1</span><button type="button" class="pager-btn" data-pager="transactions" data-dir="1">Next</button></div>
+        </div>
     </section>
 </main>
 <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>

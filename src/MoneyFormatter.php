@@ -43,12 +43,6 @@ final class MoneyFormatter
         return 'IDR ' . self::formatInteger($amount);
     }
 
-    /** Backward-compatible alias. */
-    public static function formatDecimal(string $amount): string
-    {
-        return self::formatInteger($amount);
-    }
-
     private static function incrementDigits(string $digits): string
     {
         $carry = 1;

@@ -1,4 +1,4 @@
-# Bank Receipt Extractor v1.10.0
+# Bank Receipt Extractor v1.10.2
 
 Production PHP 8.3+ / MySQL application for browser-side multi-bank OCR, registered sender/team validation, realtime final output, reporting, and weekly payment obligation carry-forward.
 
@@ -81,6 +81,23 @@ chmod 600 config/private.php 2>/dev/null || true
 chmod 600 config/installed.lock 2>/dev/null || true
 chmod 700 storage/uploads 2>/dev/null || true
 ```
+
+## Post-install hardening
+
+Do these once the installer has completed and you can sign in.
+
+1. Delete `install/` from the document root. It locks itself once `config/private.php` exists, but the safest lock is absence.
+2. Confirm nothing extra is sitting in the document root. The deploy archive, a database dump, an editor backup, or a `.git/` directory must never be there. `.htaccess` denies these by extension, but that only helps while `mod_rewrite` and `mod_authz_core` behave as expected, and it cannot help at all if the file was already fetched.
+3. Verify the deny rules actually apply on the live host:
+
+```bash
+curl -sI https://YOURDOMAIN/config/private.php   # expect 403
+curl -sI https://YOURDOMAIN/CHECKSUMS.sha256     # expect 403
+curl -sI https://YOURDOMAIN/SECURITY-NOTE.txt    # expect 403
+curl -sI https://YOURDOMAIN/index.php            # expect 200/302
+```
+
+4. `php.ini` and `.user.ini` are not shipped. They are cPanel-generated and contain an absolute path tied to one hosting account. Set `log_errors` and `error_log` through cPanel's MultiPHP INI Editor instead. The application does not depend on them: `src/Autoload.php` sets the production error posture itself on every request.
 
 ## Duplicate receipt hardening
 
@@ -189,7 +206,7 @@ The consolidated `sql/schema.sql` creates `login_attempts` on fresh installs. No
 - `.htaccess` and `storage/uploads/.htaccess` now express their deny rules for both Apache generations, guarded by `<IfModule mod_authz_core.c>`. `storage/uploads/.htaccess` previously used only the Apache 2.2 `Deny from all`, which on an Apache 2.4 server without `mod_access_compat` is an unrecognized directive and makes the directory answer `500` instead of `403`.
 - No route, endpoint, authentication, OCR, SUBID resolution, weekly ledger, reporting, or database change. No migration is required from v1.9.8.
 
-Known, unchanged: `security.setup_key` is written by the installer but is not read anywhere in the application. It is inert configuration kept for backward compatibility and is scheduled for removal in a future release.
+`security.setup_key` was removed in v1.10.2; see that section below.
 
 ## v1.10.0 navigation labels and brand icon
 
@@ -198,4 +215,33 @@ Known, unchanged: `security.setup_key` is written by the installer but is not re
 - Presentation only. Routes are unchanged: the tabs still point at `statistics.php` and `senders.php`, and no file was renamed. No endpoint, authentication, OCR, SUBID resolution, weekly ledger, reporting, or database change, and no migration is required from v1.9.9.
 
 The rejection message raised by `TeamRepository` still reads `Sender is not registered in Senders & Teams.` It is unchanged deliberately, because it is a business-rule message rather than a navigation label. Rename it separately if the wording should follow the tab.
+
+## v1.10.2 audit remediation
+
+Requires the migration in `sql/migrations/`. Fresh installs get everything from `sql/schema.sql` and need no migration.
+
+Correctness
+
+- Uploaded receipt images are now deleted on every request path. `exit()` does not run `finally`, and every successful path exited, so the `finally` cleanup only ever fired on failure and each saved receipt left its image behind in `storage/uploads`. A shutdown handler now performs the cleanup, which is the only form that survives `exit`.
+- The named `GET_LOCK` on the duplicate-receipt race path is released explicitly before responding, for the same `exit`/`finally` reason. Impact was minor because MySQL releases session locks on disconnect, but the lock was held longer than intended.
+- `WeeklyObligationService::sync()` no longer rewrites the whole week history on every call. It resumes from the last materialised week when the stored rows are provably contiguous, and falls back to the original full sweep when a gap is detected, so the self-healing behaviour is preserved. Payment allocation now runs only for senders that actually have an unallocated transaction.
+
+Security
+
+- `install/` no longer gathers or renders the server preflight once the application is installed. It previously reported the exact PHP patch level, loaded extensions, and directory writability to any unauthenticated visitor.
+- The Tesseract.js bundle is loaded with an SRI `integrity` hash. Update the hash whenever the pinned version changes, or the browser will refuse the script and OCR will not load.
+- `.htaccess` now denies archives (`.zip`, `.tar`, `.gz`, `.rar`, `.7z`), checksum manifests, `.md`, `.txt`, `VERSION`, and editor/VCS leftovers. A deployment archive left in the document root is the highest-severity mistake possible here: it normally contains `config/private.php`, and a naively built one also contains `.git/`.
+- Minimum password length is 12, enforced in `UserRepository` and reflected by every password form. Existing accounts are unaffected until their password is next changed.
+- `security.setup_key` is gone. The installer never read it; it now writes `security.trusted_proxy_header` instead, which `login.php` does read.
+
+Database
+
+- Foreign keys added: `payment_transactions.team_member_id` (`SET NULL`), `weekly_payment_obligations.payment_transaction_id` (`RESTRICT`), `weekly_payment_obligations.team_member_id` (`CASCADE`).
+- **Deleting a sender now also deletes its weekly ledger, settled weeks included.** The guard still refuses while pending/unpaid rows exist, so only paid rows can cascade. To retire a sender while keeping its settled history, disable it instead of deleting it. `payment_transactions` rows are never removed by this.
+- `reference_no` uniqueness is scoped per sender instead of globally. Two banks can legitimately issue the same reference string; the global constraint rejected the second receipt as a duplicate it was not. A collision within one sender now reports a specific message instead of a generic failure.
+- Redundant index `idx_team_members_alias_active` dropped; the unique key on `normalized_alias` already covers it.
+
+Removed
+
+- `src/MandiriReceiptParser.php` (wrapper, unreferenced), `Installer::testDatabase()`, `MoneyFormatter::formatDecimal()`, `TeamRepository::findTeamBySender()`, `UserRepository::countUsers()`, `assets/icons/source-512.png`, and `vendor/` (nothing requires `vendor/autoload.php`; `src/Autoload.php` is the runtime autoloader).
 

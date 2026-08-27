@@ -8,7 +8,19 @@ RewriteRule ^(?:composer\.(?:json|lock)|README\.md)$ - [F,L,NC]
 RewriteRule (^|/)\. - [F,L]
 </IfModule>
 
-<FilesMatch "(?:^error_log$|\.(?:env|ini|log|sql|bak|dist|lock)$)">
+# Only three extensions are meant to be fetched from the document root by name:
+# .php, and the static .ico/.svg/.html/.png the pages reference. Everything the
+# deny list below names was reachable before:
+#   *.zip / *.tar / *.gz / *.rar / *.7z - a deployment archive dropped in the web
+#     root is the single worst thing that can sit here; it typically contains
+#     config/private.php and, if it was built with a naive recursive zip, .git/
+#     as well. Denying the extension means a mistaken upload is not also a breach.
+#   *.sha256 / *.md5 - a complete file inventory of the installation.
+#   *.md - README.md was already denied by name; this covers every other one.
+#   *.txt - SECURITY-NOTE.txt documents the security internals in detail.
+#   VERSION - exact release disclosure, useful only to someone matching CVEs.
+#   *.sample / *.orig / *.rej / *.swp / *~ - editor and VCS leftovers.
+<FilesMatch "(?:^error_log$|^VERSION$|\.(?:env|ini|log|sql|bak|dist|lock|zip|tar|gz|tgz|rar|7z|sha256|md5|md|txt|sample|orig|rej|swp)$|~$)">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>

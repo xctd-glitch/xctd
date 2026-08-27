@@ -101,14 +101,6 @@ final class UserRepository
         ];
     }
 
-    public function countUsers(): int
-    {
-        $statement = $this->pdo->query('SELECT COUNT(*) AS total FROM users');
-        $row = $statement->fetch();
-
-        return is_array($row) && isset($row['total']) ? (int) $row['total'] : 0;
-    }
-
     public function create(string $username, string $password, string $role): int
     {
         $username = self::validateUsername($username);

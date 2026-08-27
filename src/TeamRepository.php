@@ -180,6 +180,80 @@ final class TeamRepository
         return $result;
     }
 
+    /** True when at least one registered account matches the mask, without the 1-vs-many/selection logic. */
+    public function accountMaskHasAnyMatch(string $bankCode, string $accountMask): bool
+    {
+        return $this->findActiveSenderCandidatesByAccountMask($bankCode, $accountMask) !== [];
+    }
+
+    /**
+     * Last-resort identity path: the receipt printed neither a usable sender name nor
+     * a source account BankReceiptParser could fingerprint (or the fingerprint matched
+     * no registered account). The admin picks the sender by hand instead of the
+     * transaction being rejected outright - the amount/date/reference are still real.
+     * $selectedSenderId is authoritative here since there is no OCR signal left to
+     * cross-check it against; it must have come from the picker UI, not be guessed.
+     *
+     * @return array{id:int,display_name:string,alias:string,location:string,team:string,tracking_start_week:string}
+     */
+    public function findActiveSenderManually(?int $selectedSenderId): array
+    {
+        if ($selectedSenderId === null || $selectedSenderId <= 0) {
+            throw new RuntimeException('Sender could not be identified automatically. Select a SUBID before saving.');
+        }
+
+        $statement = $this->pdo->prepare(
+            'SELECT id, display_name, alias, location, team, tracking_start_week
+             FROM team_members
+             WHERE is_active = 1 AND id = :id
+             LIMIT 1'
+        );
+        $statement->bindValue(':id', $selectedSenderId, PDO::PARAM_INT);
+        $statement->execute();
+        $row = $statement->fetch();
+        if (!is_array($row)) {
+            throw new RuntimeException('Selected sender is not registered or is disabled. Transaction rejected.');
+        }
+
+        return $this->validatedSenderRow($row);
+    }
+
+    /** @return array{sender_name:string,requires_selection:bool,selected_id:int|null,options:list<array{id:int,display_name:string,alias:string,location:string,team:string}>} */
+    public function resolveActiveSenderOptionsManually(): array
+    {
+        $statement = $this->pdo->query(
+            'SELECT id, display_name, alias, location, team
+             FROM team_members
+             WHERE is_active = 1
+             ORDER BY display_name ASC, alias ASC, id ASC'
+        );
+        $rows = $statement->fetchAll();
+        if (!is_array($rows) || $rows === []) {
+            throw new RuntimeException('No registered senders are available. Register a sender first.');
+        }
+
+        $options = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $options[] = [
+                'id' => (int) ($row['id'] ?? 0),
+                'display_name' => (string) ($row['display_name'] ?? ''),
+                'alias' => (string) ($row['alias'] ?? ''),
+                'location' => (string) ($row['location'] ?? ''),
+                'team' => (string) ($row['team'] ?? ''),
+            ];
+        }
+
+        return [
+            'sender_name' => 'Sender not detected — choose manually',
+            'requires_selection' => true,
+            'selected_id' => null,
+            'options' => $options,
+        ];
+    }
+
     /** @return array{sender_name:string,requires_selection:bool,selected_id:int|null,options:list<array{id:int,display_name:string,alias:string,location:string,team:string}>} */
     public function resolveActiveSenderOptions(string $senderName): array
     {
@@ -259,11 +333,6 @@ final class TeamRepository
         }
 
         return $result;
-    }
-
-    public function findTeamBySender(string $senderName): string
-    {
-        return $this->findActiveSender($senderName)['team'];
     }
 
     /** @return list<array{id:int,display_name:string,alias:string,location:string,normalized_name:string,normalized_alias:string,team:string,is_active:int,tracking_start_week:string,created_at:string,updated_at:string,accounts:list<array{id:int,bank_code:string,account_number:string}>}> */

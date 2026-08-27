@@ -142,6 +142,48 @@ final class TransactionRepository
         return is_array($row) ? $row : null;
     }
 
+    /**
+     * A transaction that already settled a weekly obligation is referenced by
+     * weekly_payment_obligations.payment_transaction_id (FK ON DELETE RESTRICT, so the
+     * delete below fails outright otherwise). Releasing that link and dropping the
+     * obligation back to 'pending' first lets the next WeeklyObligationService::sync()
+     * either reallocate another unallocated transaction to it (FIFO, unchanged logic)
+     * or age it back to 'unpaid' if the week has already closed - both existing paths.
+     */
+    public function delete(int $id): void
+    {
+        if ($id <= 0) {
+            throw new \InvalidArgumentException('Invalid transaction record.');
+        }
+
+        $this->pdo->beginTransaction();
+
+        try {
+            $release = $this->pdo->prepare(
+                "UPDATE weekly_payment_obligations
+                 SET status = 'pending', payment_transaction_id = NULL, paid_at = NULL
+                 WHERE payment_transaction_id = :id"
+            );
+            $release->bindValue(':id', $id, PDO::PARAM_INT);
+            $release->execute();
+
+            $delete = $this->pdo->prepare('DELETE FROM payment_transactions WHERE id = :id');
+            $delete->bindValue(':id', $id, PDO::PARAM_INT);
+            $delete->execute();
+            if ($delete->rowCount() !== 1) {
+                throw new \RuntimeException('Transaction record was not found.');
+            }
+
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+
+            throw $e;
+        }
+    }
+
     public static function isDuplicateKeyException(Throwable $e): bool
     {
         if (!$e instanceof \PDOException) {

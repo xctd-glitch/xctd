@@ -78,10 +78,13 @@ try {
     $teamRepository = new TeamRepository($pdo, $timezone);
     if ($receipt->senderName !== '') {
         $resolution = $teamRepository->resolveActiveSenderOptions($receipt->senderName);
-    } elseif ($receipt->sourceBankCode !== null && $receipt->sourceAccountMask !== null) {
+    } elseif ($receipt->sourceBankCode !== null && $receipt->sourceAccountMask !== null
+        && $teamRepository->accountMaskHasAnyMatch($receipt->sourceBankCode, $receipt->sourceAccountMask)) {
         $resolution = $teamRepository->resolveActiveSenderOptionsByAccount($receipt->sourceBankCode, $receipt->sourceAccountMask);
     } else {
-        throw new RuntimeException('Sender could not be identified from this receipt.');
+        // Neither a name nor a matching account was found. Offer every active sender
+        // so the admin can pick by hand rather than the upload being rejected outright.
+        $resolution = $teamRepository->resolveActiveSenderOptionsManually();
     }
 
     $weeklyService = new WeeklyObligationService($pdo, $timezone);

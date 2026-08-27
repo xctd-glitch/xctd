@@ -34,8 +34,9 @@ function realtimeRespondJson(int $status, array $payload): never
     exit;
 }
 
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
-    header('Allow: GET');
+$method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+if ($method !== 'GET' && $method !== 'POST') {
+    header('Allow: GET, POST');
     realtimeRespondJson(405, ['ok' => false, 'message' => 'Method not allowed.']);
 }
 if (Auth::user() === null) {
@@ -58,6 +59,37 @@ try {
     $userRepository = new UserRepository($pdo);
     if (!Auth::syncUserForApi($userRepository)) {
         realtimeRespondJson(401, ['ok' => false, 'message' => 'Authentication required.']);
+    }
+
+    if ($method === 'POST') {
+        if (!Auth::isAdmin()) {
+            realtimeRespondJson(403, ['ok' => false, 'message' => 'Administrator access required.']);
+        }
+        if (!Security::validateCsrf(isset($_POST['csrf_token']) && is_string($_POST['csrf_token']) ? $_POST['csrf_token'] : null)) {
+            realtimeRespondJson(419, ['ok' => false, 'message' => 'Request validation failed. Reload the page and try again.']);
+        }
+        if (!isset($_POST['action']) || $_POST['action'] !== 'delete') {
+            realtimeRespondJson(422, ['ok' => false, 'message' => 'Invalid action.']);
+        }
+
+        $idRaw = $_POST['id'] ?? null;
+        $id = is_string($idRaw) && preg_match('/^[1-9]\d{0,18}$/D', $idRaw) === 1 ? (int) $idRaw : 0;
+        if ($id <= 0) {
+            realtimeRespondJson(422, ['ok' => false, 'message' => 'Invalid transaction record.']);
+        }
+
+        (new TransactionRepository($pdo))->delete($id);
+
+        $weeklyService = new WeeklyObligationService($pdo, $timezone);
+        $weeklyService->sync();
+
+        realtimeRespondJson(200, [
+            'ok' => true,
+            'message' => 'Transaction deleted.',
+            'id' => $id,
+            'summary' => SummaryPresenter::present((new SummaryRepository($pdo))->dashboard(null, $timezone)),
+            'weekly' => WeeklyObligationPresenter::present($weeklyService->dashboard()),
+        ]);
     }
 
     $afterIdRaw = $_GET['after_id'] ?? '0';
@@ -87,5 +119,9 @@ try {
     realtimeRespondJson(200, $payload);
 } catch (Throwable $e) {
     error_log('Realtime endpoint failure: ' . $e->getMessage());
-    realtimeRespondJson(500, ['ok' => false, 'message' => 'Realtime synchronization is temporarily unavailable.']);
+    $safe = ($e instanceof RuntimeException || $e instanceof InvalidArgumentException) && !$e instanceof PDOException;
+    realtimeRespondJson($safe ? 422 : 500, [
+        'ok' => false,
+        'message' => $safe ? $e->getMessage() : 'Realtime synchronization is temporarily unavailable.',
+    ]);
 }

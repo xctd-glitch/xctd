@@ -130,16 +130,18 @@ final class BankReceiptParser
         $accountMask = null;
         if ($source === null) {
             // No sender name resolvable anywhere. Fall back to a bank + masked-account
-            // fingerprint only when the labeled block at least located a source account
+            // fingerprint when the labeled block at least located a source account
             // line — e.g. myBCA's own "Transfer Berhasil" receipt, which never prints
             // the sender's own name, only "Dari Rekening" with a partially masked number.
             if ($labeledBlock !== null && $labeledBlock['account_line'] !== null) {
                 $bankCode = $this->detectBankCode($text);
                 $accountMask = $this->buildAccountMask($labeledBlock['account_line']);
             }
-            if ($bankCode === null || $accountMask === null) {
-                throw new RuntimeException('Sender name or source account was not detected.');
-            }
+            // Deliberately not a hard failure even when neither resolves: the amount,
+            // date, reference, etc. above are still real and usable. TeamRepository
+            // falls back to letting the admin pick the sender by hand in that case
+            // (see findActiveSenderManually()/resolveActiveSenderOptionsManually()) -
+            // an empty senderName with a null bank/mask is the signal for that path.
         }
 
         return new ReceiptData(

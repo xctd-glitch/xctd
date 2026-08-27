@@ -45,8 +45,8 @@ if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === 
     var ocrProgressHandler = null;
     var pendingAliasSelection = null;
     var PAGE_SIZE = 12;
-    var txPage = 1;
     var weeklyPage = 1;
+    var armedDeleteId = null;
 
     if (!Number.isFinite(pollMs) || pollMs < 1000) { pollMs = 2500; }
     if (!Number.isFinite(hiddenPollMs) || hiddenPollMs < pollMs) { hiddenPollMs = 10000; }
@@ -140,6 +140,29 @@ if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === 
         }).finally(function () { ocrProgressHandler = null; });
     }
 
+    var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    function weekStartFor(dateStr) {
+        var datePart = String(dateStr || '').slice(0, 10);
+        var d = new Date(datePart + 'T00:00:00');
+        if (isNaN(d.getTime())) { return null; }
+        var isoDay = d.getDay() === 0 ? 7 : d.getDay();
+        d.setDate(d.getDate() - (isoDay - 1));
+        return d.toISOString().slice(0, 10);
+    }
+
+    function weekLabelFor(weekStartStr) {
+        var start = new Date(weekStartStr + 'T00:00:00');
+        var end = new Date(start.getTime());
+        end.setDate(end.getDate() + 6);
+        return start.getDate() + ' ' + MONTH_NAMES[start.getMonth()] + '–'
+            + end.getDate() + ' ' + MONTH_NAMES[end.getMonth()] + ' ' + end.getFullYear();
+    }
+
+    function canDeleteTransactions() {
+        return $('#transactions-weeks').attr('data-can-delete') === '1';
+    }
+
     function buildRow(row) {
         var id = parseInt(String(row.id || '0'), 10);
         if (!Number.isFinite(id) || id <= 0) { return null; }
@@ -148,26 +171,84 @@ if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === 
         $('<td>').text(String(row.team || '')).appendTo($tr);
         $('<td>', {'class': 'right final'}).text(String(row.adjusted_amount || 'IDR 0')).appendTo($tr);
         $('<td>', {'class': 'receipt-date'}).text(String(row.receipt_date || '')).appendTo($tr);
+        if (canDeleteTransactions()) {
+            $('<td>', {'class': 'right'}).append(
+                $('<button>', {type: 'button', 'class': 'tx-delete', 'data-id': String(id), text: 'Delete'})
+            ).appendTo($tr);
+        }
         return $tr;
     }
 
-    function trimRows() {
-        var $rows = $('#transactions-body tr[data-id]');
-        if ($rows.length > maxRows) { $rows.slice(maxRows).remove(); }
+    function findOrCreateWeekGroup(weekStartStr) {
+        var $weeks = $('#transactions-weeks');
+        var $existing = $weeks.find('.week-group[data-week-start="' + weekStartStr + '"]');
+        if ($existing.length > 0) { return $existing.find('tbody'); }
+
+        $('#transactions-empty').remove();
+
+        var colCount = canDeleteTransactions() ? 5 : 4;
+        var $details = $('<details>', {'class': 'week-group', 'data-week-start': weekStartStr});
+        var $summary = $('<summary>', {'class': 'week-summary'}).appendTo($details);
+        $('<span>').text(weekLabelFor(weekStartStr)).appendTo($summary);
+        $('<span>', {'class': 'count', 'data-week-count': true}).text('0 rows').appendTo($summary);
+        var $table = $('<table>', {'aria-label': 'Final transaction output'}).appendTo(
+            $('<div>', {'class': 'table-wrap'}).appendTo($details)
+        );
+        var $headRow = $('<tr>').appendTo($('<thead>').appendTo($table));
+        $('<th>').text('SUBID').appendTo($headRow);
+        $('<th>').text('Team').appendTo($headRow);
+        $('<th>', {'class': 'right'}).text('Final').appendTo($headRow);
+        $('<th>', {'class': 'receipt-date'}).text('Receipt date').appendTo($headRow);
+        if (colCount === 5) { $('<th>', {'class': 'right'}).text('Delete').appendTo($headRow); }
+        var $tbody = $('<tbody>').appendTo($table);
+
+        var inserted = false;
+        $weeks.find('.week-group').each(function () {
+            if (String($(this).attr('data-week-start')) < weekStartStr) {
+                $details.insertBefore($(this));
+                inserted = true;
+                return false;
+            }
+            return true;
+        });
+        if (!inserted) { $weeks.append($details); }
+        return $tbody;
+    }
+
+    function updateWeekCount($tbody) {
+        var $details = $tbody.closest('.week-group');
+        $details.find('[data-week-count]').text(String($tbody.find('tr[data-id]').length) + ' rows');
     }
 
     function updateRowCount() {
-        $('#row-count').text(String($('#transactions-body tr[data-id]').length) + ' rows');
+        $('#row-count').text(String($('#transactions-weeks tr[data-id]').length) + ' rows');
+    }
+
+    function trimRows() {
+        var $rows = $('#transactions-weeks tr[data-id]');
+        if ($rows.length <= maxRows) { return; }
+        var excess = $rows.slice(maxRows);
+        excess.each(function () {
+            var $tbody = $(this).closest('tbody');
+            $(this).remove();
+            updateWeekCount($tbody);
+            if ($tbody.find('tr[data-id]').length === 0) { $tbody.closest('.week-group').remove(); }
+        });
+        if ($('#transactions-weeks .week-group').length === 0) {
+            $('#transactions-weeks').append($('<div>', {'class': 'empty', id: 'transactions-empty'}).text('No transactions found.'));
+        }
     }
 
     function insertTransaction(row) {
         var id = parseInt(String(row.id || '0'), 10);
-        if (!Number.isFinite(id) || id <= 0 || $('#transactions-body tr[data-id="' + id + '"]').length > 0) { return false; }
+        if (!Number.isFinite(id) || id <= 0 || $('#transactions-weeks tr[data-id="' + id + '"]').length > 0) { return false; }
         var $row = buildRow(row);
         if ($row === null) { return false; }
-        $('#empty-row').remove();
+        var weekStart = weekStartFor(row.receipt_date) || weekStartFor(new Date().toISOString());
+        var $tbody = findOrCreateWeekGroup(weekStart);
+
         var inserted = false;
-        $('#transactions-body tr[data-id]').each(function () {
+        $tbody.find('tr[data-id]').each(function () {
             var existingId = parseInt(String($(this).attr('data-id') || '0'), 10);
             if (Number.isFinite(existingId) && id > existingId) {
                 $row.insertBefore($(this));
@@ -176,12 +257,56 @@ if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === 
             }
             return true;
         });
-        if (!inserted) { $('#transactions-body').append($row); }
+        if (!inserted) { $tbody.append($row); }
+        updateWeekCount($tbody);
         trimRows();
         updateRowCount();
-        refreshTransactionsPage();
         return true;
     }
+
+    function resetDeleteButton(id) {
+        $('#transactions-weeks .tx-delete[data-id="' + id + '"]').prop('disabled', false).text('Delete');
+    }
+
+    function deleteTransaction(id) {
+        $.ajax({
+            url: endpoint,
+            method: 'POST',
+            data: {csrf_token: csrfToken(), action: 'delete', id: String(id)},
+            dataType: 'json',
+            timeout: 15000,
+            headers: {'X-Requested-With': 'XMLHttpRequest'}
+        }).done(function (response) {
+            if (!response || response.ok !== true) {
+                resetDeleteButton(id);
+                showToast('Delete failed', 'error');
+                return;
+            }
+            var $row = $('#transactions-weeks tr[data-id="' + id + '"]');
+            var $tbody = $row.closest('tbody');
+            $row.remove();
+            if ($tbody.length > 0) {
+                updateWeekCount($tbody);
+                if ($tbody.find('tr[data-id]').length === 0) { $tbody.closest('.week-group').remove(); }
+            }
+            if ($('#transactions-weeks .week-group').length === 0) {
+                $('#transactions-weeks').append($('<div>', {'class': 'empty', id: 'transactions-empty'}).text('No transactions found.'));
+            }
+            updateRowCount();
+            if (response.summary) { updateSummary(response.summary); }
+            if (response.weekly) { updateWeekly(response.weekly); }
+            showToast('Transaction deleted', 'ok');
+        }).fail(function (xhr) {
+            if (handleUnauthorized(xhr)) { return; }
+            resetDeleteButton(id);
+            var message = xhr.responseJSON && typeof xhr.responseJSON.message === 'string' && xhr.responseJSON.message !== ''
+                ? xhr.responseJSON.message
+                : 'Unable to delete transaction.';
+            showToast(message, 'error');
+        });
+    }
+
+    function csrfToken() { return String($('input[name="csrf_token"]').first().val() || ''); }
 
     function updateSummary(summary) {
         if (!summary || typeof summary !== 'object') { return; }
@@ -258,7 +383,6 @@ if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === 
         return page;
     }
 
-    function refreshTransactionsPage() { txPage = applyPagination($('#transactions-body tr[data-id]'), txPage, 'transactions-pager', 'transactions-pager-info'); }
     function refreshWeeklyPage() { weeklyPage = applyPagination($('#weekly-status-body tr[data-weekly-sender-id]'), weeklyPage, 'weekly-pager', 'weekly-pager-info'); }
 
     function handleUnauthorized(xhr) {
@@ -331,7 +455,7 @@ if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === 
 
     function showAliasChoice(response, form, ocrText, $button, originalText) {
         var options = response && Array.isArray(response.options) ? response.options : [];
-        if (options.length < 2) {
+        if (options.length < 1) {
             throw new Error('Sender SUBID selection is unavailable.');
         }
 
@@ -359,7 +483,7 @@ if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === 
                 'data-sender-id': String(id)
             }).text(subid).append($('<small>').text(meta)).appendTo($options);
         });
-        if ($options.children().length < 2) {
+        if ($options.children().length < 1) {
             pendingAliasSelection = null;
             throw new Error('Sender SUBID selection is unavailable.');
         }
@@ -568,11 +692,29 @@ if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] === 
     $('.pager').on('click', '[data-pager]', function () {
         var scope = String($(this).attr('data-pager') || '');
         var dir = parseInt(String($(this).attr('data-dir') || '0'), 10) || 0;
-        if (scope === 'transactions') { txPage += dir; refreshTransactionsPage(); }
-        else if (scope === 'weekly') { weeklyPage += dir; refreshWeeklyPage(); }
+        if (scope === 'weekly') { weeklyPage += dir; refreshWeeklyPage(); }
     });
 
-    refreshTransactionsPage();
+    $('#transactions-weeks').on('click', '.tx-delete', function () {
+        var $button = $(this);
+        var id = parseInt(String($button.attr('data-id') || '0'), 10);
+        if (!Number.isFinite(id) || id <= 0) { return; }
+        if (armedDeleteId !== id) {
+            armedDeleteId = id;
+            $button.text('Confirm');
+            window.setTimeout(function () {
+                if (armedDeleteId === id) {
+                    armedDeleteId = null;
+                    $button.text('Delete');
+                }
+            }, 3000);
+            return;
+        }
+        armedDeleteId = null;
+        $button.prop('disabled', true).text('Deleting…');
+        deleteTransaction(id);
+    });
+
     refreshWeeklyPage();
     scheduleNext(600);
 }(window.jQuery));
