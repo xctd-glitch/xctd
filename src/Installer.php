@@ -143,7 +143,7 @@ final class Installer
             $configWritten = true;
 
             $lockData = json_encode([
-                'version' => '1.10.0',
+                'version' => $this->readVersion(),
                 'installed_at' => gmdate('c'),
                 'instance' => bin2hex(random_bytes(16)),
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
@@ -168,6 +168,22 @@ final class Installer
 
             throw new RuntimeException('Installation could not be completed.');
         }
+    }
+
+    /**
+     * The release stamped into installed.lock used to be a literal here, which
+     * drifted from the VERSION file. Reading the file keeps one source of truth.
+     */
+    private function readVersion(): string
+    {
+        $raw = @file_get_contents($this->rootPath . '/VERSION');
+        if (!is_string($raw)) {
+            return '0.0.0';
+        }
+
+        $version = trim($raw);
+
+        return preg_match('/^\d+\.\d+\.\d+$/D', $version) === 1 ? $version : '0.0.0';
     }
 
     private function assertFreshDatabase(PDO $pdo): void

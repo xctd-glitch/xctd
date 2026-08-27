@@ -11,7 +11,7 @@ header('Cache-Control: no-cache, no-store, must-revalidate');
 
 // Bump this whenever any cached asset (assets/*.php, icons, offline.html) changes,
 // otherwise installed PWAs keep serving stale assets from the previous cache.
-const CACHE_VERSION = 'bank-receipt-pwa-v1.10.1';
+const CACHE_VERSION = 'bank-receipt-pwa-v1.10.2';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const OFFLINE_URL = './offline.html';
 const STATIC_ASSETS = [

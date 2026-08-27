@@ -222,6 +222,25 @@ try {
 
                 $existingRow = $transactionRepository->findByImageSha256($upload->sha256);
                 if ($existingRow === null) {
+                    // Same image already stored is one cause of 1062; the other is
+                    // this sender having filed this reference number before, with a
+                    // different image. That second case used to fall through to the
+                    // generic handler, which classifies PDOException as unsafe and
+                    // answers "Unable to load the application data." - true but
+                    // useless. Asking the table which cause it was avoids parsing
+                    // the driver's error text. Throwing here (rather than exiting)
+                    // lets the finally below release the lock as usual.
+                    $clash = $transactionRepository->findByMemberReference(
+                        $teamMemberId,
+                        $canonicalReceipt->referenceNo
+                    );
+                    if ($clash !== null) {
+                        throw new RuntimeException(
+                            'Reference number ' . (string) $canonicalReceipt->referenceNo
+                            . ' is already recorded for this SUBID. Transaction rejected.'
+                        );
+                    }
+
                     throw $e;
                 }
 

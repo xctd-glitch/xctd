@@ -493,6 +493,19 @@ final class TeamRepository
         }
     }
 
+    /**
+     * Deleting a sender now cascades: fk_weekly_payment_member is ON DELETE
+     * CASCADE, so every weekly_payment_obligations row for this sender goes with
+     * it - settled weeks included. The guard below only blocks 'pending' and
+     * 'unpaid', so in practice it is the 'paid' history that disappears.
+     *
+     * payment_transactions is not affected; that FK is ON DELETE SET NULL, so the
+     * payments themselves survive and stay readable through the denormalised
+     * sender_name / sender_alias columns.
+     *
+     * To retire a sender while keeping its settled ledger, disable it instead of
+     * deleting it - a disabled sender keeps every past obligation row.
+     */
     public function delete(int $id): void
     {
         if ($id <= 0) {

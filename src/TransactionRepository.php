@@ -109,6 +109,39 @@ final class TransactionRepository
         return is_array($row) ? $row : null;
     }
 
+    /**
+     * Existing transaction holding this reference number for this sender.
+     *
+     * Used to tell the two duplicate-key causes apart after an insert fails.
+     * uq_payment_transactions_member_reference is scoped per sender, so the
+     * lookup has to be scoped the same way - a bare reference_no search would
+     * report a collision that the constraint does not actually forbid.
+     *
+     * @return array<string, int|string|null>|null
+     */
+    public function findByMemberReference(int $teamMemberId, ?string $referenceNo): ?array
+    {
+        if ($teamMemberId <= 0 || $referenceNo === null || $referenceNo === '') {
+            return null;
+        }
+
+        $statement = $this->pdo->prepare(
+            'SELECT pt.id, pt.reference_no, pt.receipt_date, pt.receipt_time, pt.sender_name,
+                    COALESCE(tm.alias, pt.sender_alias) AS sender_alias, pt.team_member_id,
+                    pt.source_account_last4, pt.team, pt.original_amount, pt.adjusted_amount, pt.created_at
+             FROM payment_transactions pt
+             LEFT JOIN team_members tm ON tm.id = pt.team_member_id
+             WHERE pt.team_member_id = :team_member_id AND pt.reference_no = :reference_no
+             LIMIT 1'
+        );
+        $statement->bindValue(':team_member_id', $teamMemberId, PDO::PARAM_INT);
+        $statement->bindValue(':reference_no', $referenceNo);
+        $statement->execute();
+        $row = $statement->fetch();
+
+        return is_array($row) ? $row : null;
+    }
+
     public static function isDuplicateKeyException(Throwable $e): bool
     {
         if (!$e instanceof \PDOException) {
